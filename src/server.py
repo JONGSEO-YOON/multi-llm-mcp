@@ -503,6 +503,42 @@ Codex CLI 사용 시 자동으로 gpt-5.2-codex 모델로 step-by-step 분석합
                 "required": ["problem"]
             }
         ),
+        Tool(
+            name="review_implementation",
+            description="""Review Implementation - 구현 검토 에이전트 (Oracle/GPT)
+
+사용자 요구사항과 실제 구현을 비교하여 피드백을 제공합니다.
+구현이 요구사항을 정확히 충족하는지, 누락된 부분이 있는지 분석합니다.
+
+사용 시점:
+- 코드 구현 완료 후 요구사항 충족 여부 확인
+- 사용자 요청과 결과물 일치 검증
+- 누락된 기능이나 잘못된 구현 발견
+
+피드백 내용:
+- 요구사항 충족 여부 (O/X)
+- 정확하게 구현된 부분
+- 누락되거나 잘못 구현된 부분
+- 개선 제안""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_request": {
+                        "type": "string",
+                        "description": "사용자의 원래 요청/요구사항"
+                    },
+                    "implementation": {
+                        "type": "string",
+                        "description": "구현된 코드 또는 결과물"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "추가 컨텍스트 (기존 코드, 제약 조건 등)"
+                    }
+                },
+                "required": ["user_request", "implementation"]
+            }
+        ),
 
         # ========== Gemini 에이전트들 ==========
         Tool(
@@ -778,6 +814,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await _ask_gpt(arguments)
         elif name == "oracle":
             return await _oracle(arguments)
+        elif name == "review_implementation":
+            return await _review_implementation(arguments)
         elif name == "ask_gemini":
             return await _ask_gemini(arguments)
         elif name == "frontend_designer":
@@ -855,6 +893,61 @@ Please analyze this problem step by step and provide your recommendations."""
     return [TextContent(
         type="text",
         text=f"## Oracle 분석 결과\n**모델**: {method}\n\n---\n\n{result}"
+    )]
+
+
+async def _review_implementation(args: dict) -> list[TextContent]:
+    """Review Implementation - 구현 검토 에이전트
+
+    사용자 요구사항과 구현을 비교하여 피드백 제공
+    """
+    user_request = args["user_request"]
+    implementation = args["implementation"]
+    context = args.get("context", "")
+
+    system_prompt = """You are a Code Review Agent that verifies if implementations match user requirements.
+
+Your task is to:
+1. Carefully analyze the user's original request
+2. Examine the implementation provided
+3. Determine if the implementation correctly fulfills ALL requirements
+4. Identify any missing, incorrect, or partially implemented features
+
+Provide your feedback in the following format:
+
+## Requirements Analysis
+List each requirement from the user's request.
+
+## Implementation Review
+For each requirement:
+- [O] Correctly implemented: explanation
+- [X] Not implemented or missing: explanation
+- [~] Partially implemented: explanation
+
+## Overall Assessment
+- Match Score: X/Y requirements met
+- Status: COMPLETE / INCOMPLETE / NEEDS REVISION
+
+## Recommendations
+If incomplete, provide specific recommendations for what needs to be fixed or added.
+
+Be thorough but concise. Focus on whether the implementation matches what the user asked for."""
+
+    full_prompt = f"""## User's Original Request
+{user_request}
+
+## Implementation to Review
+{implementation}
+
+{f"## Additional Context{chr(10)}{context}" if context else ""}
+
+Please review if this implementation correctly fulfills the user's requirements."""
+
+    result, method = await run_gpt(full_prompt, system_prompt=system_prompt)
+
+    return [TextContent(
+        type="text",
+        text=f"## Implementation Review 결과\n**모델**: {method}\n\n---\n\n{result}"
     )]
 
 

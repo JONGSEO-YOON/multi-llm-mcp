@@ -11,6 +11,13 @@
 - 리팩토링 전략 수립
 - 기술 선택 비교
 
+### Review Implementation (GPT-5.2) - `mcp__multi-llm__review_implementation`
+**사용 시점**: 구현 완료 후 사용자 요구사항 충족 여부 검증이 필요할 때
+- 코드 구현 완료 후 요구사항 일치 확인
+- 누락된 기능 발견
+- 잘못 구현된 부분 식별
+- 개선 제안 받기
+
 ### Frontend Designer (Gemini 3) - `mcp__multi-llm__frontend_designer`
 **사용 시점**: UI/UX 코드 작성이 필요할 때
 - React/Vue/Svelte 컴포넌트 생성
