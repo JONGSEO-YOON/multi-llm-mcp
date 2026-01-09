@@ -19,6 +19,15 @@ curl -fsSL https://raw.githubusercontent.com/jongseo-yoon/multi-llm-mcp/main/ins
 
 ## 제공 도구
 
+### 에이전트 (Sub Agents)
+| 도구 | 설명 |
+|------|------|
+| `oracle` | 🔮 고급 추론 에이전트 (GPT-5.2) - 아키텍처 설계, 알고리즘 최적화 |
+| `frontend_designer` | 🎨 UI/UX 코드 작성 (Gemini 3) - React, Vue, Tailwind 등 |
+| `document_writer` | 📝 문서 작성 (Gemini 3) - README, API 문서, 주석 |
+| `multimodal_look` | 👁️ 이미지 분석 (Gemini 3) - 스크린샷에서 코드 생성, 버그 발견 |
+
+### 기본 도구
 | 도구 | 설명 |
 |------|------|
 | `ask_gpt` | GPT에게 질문 (Codex CLI 또는 API) |
@@ -26,6 +35,16 @@ curl -fsSL https://raw.githubusercontent.com/jongseo-yoon/multi-llm-mcp/main/ins
 | `compare_models` | 같은 질문을 두 모델에 보내고 비교 |
 | `check_status` | 인증 상태 확인 |
 | `login_guide` | 로그인 방법 안내 |
+
+### History 관리
+| 도구 | 설명 |
+|------|------|
+| `set_project_root` | 프로젝트 루트 설정 (히스토리 저장 위치) |
+| `get_history` | 최근 작업 히스토리 조회 |
+| `compact_history` | 오래된 히스토리 파일 압축 |
+
+> **History 기능**: 에이전트 호출 결과가 `history/HISTORY_#.md`에 자동 저장됩니다.
+> 10개 이상 쌓이면 자동으로 압축됩니다.
 
 ## 빠른 시작
 

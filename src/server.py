@@ -20,6 +20,9 @@ import asyncio
 import subprocess
 import shutil
 import base64
+import glob
+import json
+from datetime import datetime
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -32,6 +35,160 @@ load_dotenv()
 
 # Initialize MCP server
 server = Server("multi-llm")
+
+# History 설정
+HISTORY_DIR_NAME = "history"
+MAX_HISTORY_FILES = 10  # 이 개수 이상이면 compaction
+COMPACT_INTO = 5  # compaction 시 몇 개로 묶을지
+
+
+# ============================================
+# History 관리 클래스
+# ============================================
+
+class HistoryManager:
+    """작업 히스토리를 관리하는 클래스"""
+
+    def __init__(self, project_root: str = None):
+        self.project_root = project_root or os.getcwd()
+        self.history_dir = os.path.join(self.project_root, HISTORY_DIR_NAME)
+
+    def ensure_history_dir(self) -> str:
+        """history 폴더 생성"""
+        if not os.path.exists(self.history_dir):
+            os.makedirs(self.history_dir)
+        return self.history_dir
+
+    def get_history_files(self) -> list[str]:
+        """모든 HISTORY_*.md 파일 목록 (정렬됨)"""
+        pattern = os.path.join(self.history_dir, "HISTORY_*.md")
+        files = glob.glob(pattern)
+        # 숫자 기준 정렬
+        files.sort(key=lambda x: int(os.path.basename(x).replace("HISTORY_", "").replace(".md", "").split("_")[0]) if os.path.basename(x).replace("HISTORY_", "").replace(".md", "").replace("_COMPACT", "").isdigit() else 0)
+        return files
+
+    def get_next_history_number(self) -> int:
+        """다음 히스토리 파일 번호"""
+        files = self.get_history_files()
+        if not files:
+            return 1
+        # 마지막 파일에서 번호 추출
+        last_file = os.path.basename(files[-1])
+        try:
+            num = int(last_file.replace("HISTORY_", "").replace(".md", "").split("_")[0])
+            return num + 1
+        except ValueError:
+            return len(files) + 1
+
+    def save_to_history(self, agent_name: str, request: str, response: str, metadata: dict = None) -> str:
+        """작업 결과를 히스토리에 저장"""
+        self.ensure_history_dir()
+
+        # Compaction 확인
+        files = self.get_history_files()
+        if len(files) >= MAX_HISTORY_FILES:
+            self.compact_history()
+
+        # 새 히스토리 파일 생성
+        next_num = self.get_next_history_number()
+        filename = f"HISTORY_{next_num}.md"
+        filepath = os.path.join(self.history_dir, filename)
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        content = f"""# History #{next_num}
+
+**시간**: {timestamp}
+**에이전트**: {agent_name}
+
+## 요청
+{request}
+
+## 응답
+{response}
+"""
+
+        if metadata:
+            content += f"\n## 메타데이터\n```json\n{json.dumps(metadata, ensure_ascii=False, indent=2)}\n```\n"
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        return filepath
+
+    def compact_history(self) -> str:
+        """오래된 히스토리를 묶어서 저장"""
+        files = self.get_history_files()
+        if len(files) < MAX_HISTORY_FILES:
+            return None
+
+        # 앞의 파일들을 묶음
+        files_to_compact = files[:len(files) - COMPACT_INTO]
+        if not files_to_compact:
+            return None
+
+        # Compact 파일 생성
+        compact_num = self.get_next_history_number()
+        compact_filename = f"HISTORY_{compact_num}_COMPACT.md"
+        compact_filepath = os.path.join(self.history_dir, compact_filename)
+
+        compact_content = f"""# History Compact (#{compact_num})
+
+**생성 시간**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+**포함된 히스토리**: {len(files_to_compact)}개
+
+---
+
+"""
+
+        for f in files_to_compact:
+            with open(f, 'r', encoding='utf-8') as file:
+                content = file.read()
+                compact_content += f"\n{content}\n---\n"
+
+        with open(compact_filepath, 'w', encoding='utf-8') as f:
+            f.write(compact_content)
+
+        # 묶인 파일들 삭제
+        for f in files_to_compact:
+            os.remove(f)
+
+        return compact_filepath
+
+    def get_recent_history(self, count: int = 5) -> str:
+        """최근 히스토리 요약"""
+        files = self.get_history_files()
+        recent = files[-count:] if len(files) >= count else files
+
+        if not recent:
+            return "히스토리가 없습니다."
+
+        summary = f"## 최근 히스토리 ({len(recent)}개)\n\n"
+        for f in reversed(recent):
+            filename = os.path.basename(f)
+            with open(f, 'r', encoding='utf-8') as file:
+                lines = file.readlines()[:10]  # 첫 10줄만
+                summary += f"### {filename}\n{''.join(lines)}\n...\n\n"
+
+        return summary
+
+
+# Global history manager (프로젝트 루트는 나중에 설정)
+history_manager: HistoryManager = None
+
+
+def get_history_manager() -> HistoryManager:
+    """HistoryManager 인스턴스 반환 (lazy init)"""
+    global history_manager
+    if history_manager is None:
+        history_manager = HistoryManager()
+    return history_manager
+
+
+def set_project_root(root: str):
+    """프로젝트 루트 설정"""
+    global history_manager
+    history_manager = HistoryManager(root)
 
 # CLI paths
 CODEX_PATH = shutil.which("codex")
@@ -502,6 +659,53 @@ API 키 없이 CLI 로그인만으로 사용 가능합니다.
                 "properties": {},
                 "required": []
             }
+        ),
+
+        # ========== History 관리 ==========
+        Tool(
+            name="set_project_root",
+            description="""프로젝트 루트 경로를 설정합니다.
+
+히스토리 파일이 저장될 위치를 지정합니다.
+설정하지 않으면 현재 작업 디렉토리가 사용됩니다.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "프로젝트 루트 경로 (절대 경로)"
+                    }
+                },
+                "required": ["path"]
+            }
+        ),
+        Tool(
+            name="get_history",
+            description="""최근 작업 히스토리를 조회합니다.
+
+history/ 폴더에 저장된 HISTORY_*.md 파일들을 조회합니다.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "조회할 히스토리 개수 (기본값: 5)",
+                        "default": 5
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="compact_history",
+            description="""히스토리 파일을 압축합니다.
+
+오래된 히스토리 파일들을 하나의 COMPACT 파일로 묶습니다.""",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
         )
     ]
 
@@ -529,6 +733,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await _check_status()
         elif name == "login_guide":
             return await _login_guide()
+        elif name == "set_project_root":
+            return await _set_project_root(arguments)
+        elif name == "get_history":
+            return await _get_history(arguments)
+        elif name == "compact_history":
+            return await _compact_history()
         else:
             return [TextContent(type="text", text=f"알 수 없는 도구: {name}")]
     except Exception as e:
@@ -579,6 +789,9 @@ Please analyze this problem step by step and provide your recommendations."""
 
     result, method = await run_gpt(full_prompt, model, system_prompt)
 
+    # 히스토리에 저장
+    save_agent_history("Oracle", problem, result, {"model": method, "context": context[:200] if context else None})
+
     return [TextContent(
         type="text",
         text=f"## 🔮 Oracle 분석 결과\n**모델**: {method}\n\n---\n\n{result}"
@@ -627,6 +840,9 @@ Include:
 
     result, method = await run_gemini_agent(prompt)
 
+    # 히스토리에 저장
+    save_agent_history("Frontend Designer", request, result, {"framework": framework, "styling": styling})
+
     return [TextContent(
         type="text",
         text=f"## 🎨 Frontend Designer 결과\n**방식**: {method}\n**Framework**: {framework} + {styling}\n\n---\n\n{result}"
@@ -674,6 +890,9 @@ Please write professional documentation that is:
 
     result, method = await run_gemini_agent(prompt)
 
+    # 히스토리에 저장
+    save_agent_history("Document Writer", request, result, {"doc_type": doc_type, "language": language})
+
     return [TextContent(
         type="text",
         text=f"## 📝 Document Writer 결과\n**방식**: {method}\n**문서 유형**: {doc_type_map.get(doc_type, doc_type)}\n\n---\n\n{result}"
@@ -706,6 +925,9 @@ async def _multimodal_look(args: dict) -> list[TextContent]:
 {request}"""
 
     result, method = await run_gemini_agent(prompt, image_path=image_path)
+
+    # 히스토리에 저장
+    save_agent_history("Multimodal Looker", request, result, {"task_type": task_type, "image_path": image_path})
 
     return [TextContent(
         type="text",
@@ -832,6 +1054,71 @@ async def _login_guide() -> list[TextContent]:
 - CLI 로그인과 API 키를 동시에 설정해도 됩니다 (CLI 우선)
 """
     return [TextContent(type="text", text=guide)]
+
+
+# ============================================
+# History 관련 도구 구현
+# ============================================
+
+async def _set_project_root(args: dict) -> list[TextContent]:
+    """프로젝트 루트 설정"""
+    path = args["path"]
+
+    if not os.path.isabs(path):
+        return [TextContent(type="text", text=f"❌ 절대 경로를 입력해주세요: {path}")]
+
+    if not os.path.exists(path):
+        return [TextContent(type="text", text=f"❌ 경로가 존재하지 않습니다: {path}")]
+
+    set_project_root(path)
+    hm = get_history_manager()
+    hm.ensure_history_dir()
+
+    return [TextContent(
+        type="text",
+        text=f"✅ 프로젝트 루트 설정 완료\n\n경로: {path}\n히스토리 폴더: {hm.history_dir}"
+    )]
+
+
+async def _get_history(args: dict) -> list[TextContent]:
+    """히스토리 조회"""
+    count = args.get("count", 5)
+    hm = get_history_manager()
+
+    history = hm.get_recent_history(count)
+
+    return [TextContent(
+        type="text",
+        text=f"# 작업 히스토리\n\n히스토리 폴더: {hm.history_dir}\n\n{history}"
+    )]
+
+
+async def _compact_history() -> list[TextContent]:
+    """히스토리 압축"""
+    hm = get_history_manager()
+
+    result = hm.compact_history()
+
+    if result:
+        return [TextContent(
+            type="text",
+            text=f"✅ 히스토리 압축 완료\n\n생성된 파일: {result}"
+        )]
+    else:
+        return [TextContent(
+            type="text",
+            text="ℹ️ 압축할 히스토리가 없습니다. (10개 미만)"
+        )]
+
+
+def save_agent_history(agent_name: str, request: str, response: str, metadata: dict = None):
+    """에이전트 호출 결과를 히스토리에 저장 (동기 헬퍼)"""
+    try:
+        hm = get_history_manager()
+        hm.save_to_history(agent_name, request, response, metadata)
+    except Exception as e:
+        # 히스토리 저장 실패는 무시 (메인 기능에 영향 주지 않음)
+        pass
 
 
 def main():

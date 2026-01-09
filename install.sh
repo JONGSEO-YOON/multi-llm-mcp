@@ -124,10 +124,18 @@ SUB_AGENT_INSTRUCTIONS='
 - 디자인 피드백 제공
 - 에러 스크린샷 분석
 
+### 📚 History 관리
+- 에이전트 호출 결과는 `history/HISTORY_#.md`에 자동 저장됩니다
+- `mcp__multi-llm__set_project_root`: 프로젝트 루트 설정 (히스토리 저장 위치)
+- `mcp__multi-llm__get_history`: 최근 작업 히스토리 조회
+- `mcp__multi-llm__compact_history`: 오래된 히스토리 압축
+
 ### 사용 규칙
 1. 위 상황에 해당하면 **자동으로** 해당 도구를 사용
 2. 일반적인 코드 탐색, 검색, 편집은 Claude가 직접 수행
 3. 도구 사용 전 사용자에게 물어볼 필요 없음
+4. **새 프로젝트 시작 시** `set_project_root`로 프로젝트 경로 설정
+5. 이전 작업 맥락이 필요하면 `get_history`로 히스토리 확인
 '
 
 if [ -f "$CLAUDE_MD" ]; then
