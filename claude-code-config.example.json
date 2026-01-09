@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "multi-llm": {
+      "command": "${HOME}/multi-llm-mcp/venv/bin/python",
+      "args": ["-m", "src.server"],
+      "cwd": "${HOME}/multi-llm-mcp",
+      "env": {
+        "OPENAI_API_KEY": "sk-your-key-here",
+        "GEMINI_API_KEY": "your-gemini-key-here"
+      }
+    }
+  }
+}
