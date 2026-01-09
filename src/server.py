@@ -80,8 +80,14 @@ class HistoryManager:
         except ValueError:
             return len(files) + 1
 
-    def save_to_history(self, agent_name: str, request: str, response: str, metadata: dict = None) -> str:
-        """작업 결과를 히스토리에 저장"""
+    def save_workflow(self, user_request: str, workflow_summary: str, agents_used: list[str] = None) -> str:
+        """Claude의 전체 작업 워크플로우를 히스토리에 저장
+
+        Args:
+            user_request: 사용자의 원래 요청
+            workflow_summary: Claude가 수행한 전체 작업 요약
+            agents_used: 사용된 에이전트 목록 (예: ["Oracle", "Frontend Designer"])
+        """
         self.ensure_history_dir()
 
         # Compaction 확인
@@ -96,20 +102,19 @@ class HistoryManager:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        content = f"""# History #{next_num}
+        agents_str = ", ".join(agents_used) if agents_used else "없음"
+
+        content = f"""# Workflow #{next_num}
 
 **시간**: {timestamp}
-**에이전트**: {agent_name}
+**사용된 에이전트**: {agents_str}
 
-## 요청
-{request}
+## 사용자 요청
+{user_request}
 
-## 응답
-{response}
+## 작업 요약
+{workflow_summary}
 """
-
-        if metadata:
-            content += f"\n## 메타데이터\n```json\n{json.dumps(metadata, ensure_ascii=False, indent=2)}\n```\n"
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
@@ -734,6 +739,32 @@ history/ 폴더에 저장된 HISTORY_*.md 파일들을 조회합니다.""",
                 "properties": {},
                 "required": []
             }
+        ),
+        Tool(
+            name="save_workflow",
+            description="""Claude의 전체 작업 워크플로우를 히스토리에 저장합니다.
+
+작업이 완료된 후 사용자 요청과 수행한 작업을 요약하여 기록합니다.
+개별 에이전트 호출이 아닌 전체 작업 흐름을 기록합니다.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_request": {
+                        "type": "string",
+                        "description": "사용자의 원래 요청"
+                    },
+                    "workflow_summary": {
+                        "type": "string",
+                        "description": "Claude가 수행한 전체 작업 요약"
+                    },
+                    "agents_used": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "사용된 에이전트 목록 (예: [\"Oracle\", \"Frontend Designer\"])"
+                    }
+                },
+                "required": ["user_request", "workflow_summary"]
+            }
         )
     ]
 
@@ -767,6 +798,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await _get_history(arguments)
         elif name == "compact_history":
             return await _compact_history()
+        elif name == "save_workflow":
+            return await _save_workflow(arguments)
         else:
             return [TextContent(type="text", text=f"알 수 없는 도구: {name}")]
     except Exception as e:
@@ -819,9 +852,6 @@ Please analyze this problem step by step and provide your recommendations."""
 
     result, method = await run_gpt(full_prompt, system_prompt=system_prompt)
 
-    # 히스토리에 저장
-    save_agent_history("Oracle", problem, result, {"model": method, "context": context[:200] if context else None})
-
     return [TextContent(
         type="text",
         text=f"## Oracle 분석 결과\n**모델**: {method}\n\n---\n\n{result}"
@@ -870,9 +900,6 @@ Include:
 
     result, method = await run_gemini_agent(prompt)
 
-    # 히스토리에 저장
-    save_agent_history("Frontend Designer", request, result, {"framework": framework, "styling": styling})
-
     return [TextContent(
         type="text",
         text=f"## Frontend Designer 결과\n**방식**: {method}\n**Framework**: {framework} + {styling}\n\n---\n\n{result}"
@@ -920,9 +947,6 @@ Please write professional documentation that is:
 
     result, method = await run_gemini_agent(prompt)
 
-    # 히스토리에 저장
-    save_agent_history("Document Writer", request, result, {"doc_type": doc_type, "language": language})
-
     return [TextContent(
         type="text",
         text=f"## Document Writer 결과\n**방식**: {method}\n**문서 유형**: {doc_type_map.get(doc_type, doc_type)}\n\n---\n\n{result}"
@@ -955,9 +979,6 @@ async def _multimodal_look(args: dict) -> list[TextContent]:
 {request}"""
 
     result, method = await run_gemini_agent(prompt, image_path=image_path)
-
-    # 히스토리에 저장
-    save_agent_history("Multimodal Looker", request, result, {"task_type": task_type, "image_path": image_path})
 
     return [TextContent(
         type="text",
@@ -1142,14 +1163,19 @@ async def _compact_history() -> list[TextContent]:
         )]
 
 
-def save_agent_history(agent_name: str, request: str, response: str, metadata: dict = None):
-    """에이전트 호출 결과를 히스토리에 저장 (동기 헬퍼)"""
-    try:
-        hm = get_history_manager()
-        hm.save_to_history(agent_name, request, response, metadata)
-    except Exception as e:
-        # 히스토리 저장 실패는 무시 (메인 기능에 영향 주지 않음)
-        pass
+async def _save_workflow(args: dict) -> list[TextContent]:
+    """워크플로우 요약 저장"""
+    user_request = args["user_request"]
+    workflow_summary = args["workflow_summary"]
+    agents_used = args.get("agents_used", [])
+
+    hm = get_history_manager()
+    filepath = hm.save_workflow(user_request, workflow_summary, agents_used)
+
+    return [TextContent(
+        type="text",
+        text=f"워크플로우 저장 완료: {filepath}"
+    )]
 
 
 def main():
