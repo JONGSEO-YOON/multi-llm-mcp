@@ -43,6 +43,131 @@ COMPACT_INTO = 5  # compaction 시 몇 개로 묶을지
 
 
 # ============================================
+# 비동기 태스크 관리
+# ============================================
+
+class TaskManager:
+    """백그라운드 에이전트 태스크를 관리하는 클래스
+
+    Claude가 여러 sub agent를 병렬로 실행하고 나중에 결과를 수집할 수 있게 함
+    """
+
+    def __init__(self):
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._results: dict[str, dict] = {}
+        self._counter = 0
+
+    def _generate_task_id(self, agent_name: str) -> str:
+        """고유 태스크 ID 생성"""
+        self._counter += 1
+        timestamp = datetime.now().strftime("%H%M%S")
+        return f"{agent_name.lower().replace(' ', '_')}_{timestamp}_{self._counter}"
+
+    async def start_task(self, agent_name: str, coro) -> str:
+        """에이전트 태스크를 백그라운드로 시작
+
+        Returns:
+            task_id: 나중에 결과를 조회할 때 사용할 ID
+        """
+        task_id = self._generate_task_id(agent_name)
+
+        async def wrapped_task():
+            try:
+                start_time = datetime.now()
+                result = await coro
+                end_time = datetime.now()
+                self._results[task_id] = {
+                    "status": "completed",
+                    "agent": agent_name,
+                    "result": result,
+                    "started_at": start_time.isoformat(),
+                    "completed_at": end_time.isoformat(),
+                    "duration_seconds": (end_time - start_time).total_seconds()
+                }
+            except Exception as e:
+                self._results[task_id] = {
+                    "status": "failed",
+                    "agent": agent_name,
+                    "error": str(e),
+                    "completed_at": datetime.now().isoformat()
+                }
+
+        task = asyncio.create_task(wrapped_task())
+        self._tasks[task_id] = task
+        self._results[task_id] = {
+            "status": "running",
+            "agent": agent_name,
+            "started_at": datetime.now().isoformat()
+        }
+
+        return task_id
+
+    def get_status(self, task_id: str) -> dict:
+        """태스크 상태 조회"""
+        if task_id not in self._results:
+            return {"status": "not_found", "task_id": task_id}
+        return self._results[task_id]
+
+    def get_all_status(self) -> dict[str, dict]:
+        """모든 태스크 상태 조회"""
+        return {
+            task_id: {
+                "status": info["status"],
+                "agent": info["agent"],
+                "started_at": info.get("started_at"),
+                "completed_at": info.get("completed_at")
+            }
+            for task_id, info in self._results.items()
+        }
+
+    async def wait_for_task(self, task_id: str, timeout: float = None) -> dict:
+        """특정 태스크 완료 대기"""
+        if task_id not in self._tasks:
+            return self.get_status(task_id)
+
+        task = self._tasks[task_id]
+        try:
+            await asyncio.wait_for(task, timeout=timeout)
+        except asyncio.TimeoutError:
+            return {"status": "timeout", "task_id": task_id}
+
+        return self._results[task_id]
+
+    async def wait_for_all(self, task_ids: list[str] = None, timeout: float = None) -> dict[str, dict]:
+        """여러 태스크 완료 대기"""
+        if task_ids is None:
+            task_ids = list(self._tasks.keys())
+
+        tasks_to_wait = [self._tasks[tid] for tid in task_ids if tid in self._tasks]
+
+        if tasks_to_wait:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks_to_wait, return_exceptions=True),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                pass
+
+        return {tid: self._results.get(tid, {"status": "not_found"}) for tid in task_ids}
+
+    def cleanup_completed(self) -> int:
+        """완료된 태스크 정리"""
+        completed = [
+            tid for tid, info in self._results.items()
+            if info["status"] in ("completed", "failed")
+        ]
+        for tid in completed:
+            self._tasks.pop(tid, None)
+            self._results.pop(tid, None)
+        return len(completed)
+
+
+# Global task manager
+task_manager = TaskManager()
+
+
+# ============================================
 # History 관리 클래스
 # ============================================
 
@@ -734,6 +859,97 @@ history/ 폴더에 저장된 HISTORY_*.md 파일들을 조회합니다.""",
                 "properties": {},
                 "required": []
             }
+        ),
+
+        # ========== 비동기 태스크 관리 ==========
+        Tool(
+            name="dispatch_agent",
+            description="""🚀 에이전트를 백그라운드로 실행하고 즉시 task_id를 반환합니다.
+
+Claude가 여러 sub agent를 병렬로 실행하고 다른 작업을 계속할 수 있습니다.
+결과는 나중에 get_task_result로 수집합니다.
+
+사용 예시:
+1. dispatch_agent로 Oracle, Frontend Designer 동시 실행
+2. Claude는 다른 작업 수행 (코드 탐색, 파일 읽기 등)
+3. get_task_result로 결과 수집
+
+지원 에이전트: oracle, frontend_designer, document_writer, ask_gpt, ask_gemini""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "실행할 에이전트",
+                        "enum": ["oracle", "frontend_designer", "document_writer", "ask_gpt", "ask_gemini"]
+                    },
+                    "args": {
+                        "type": "object",
+                        "description": "에이전트에 전달할 인자 (각 에이전트의 inputSchema 참고)"
+                    }
+                },
+                "required": ["agent", "args"]
+            }
+        ),
+        Tool(
+            name="get_task_result",
+            description="""📥 백그라운드 태스크의 결과를 가져옵니다.
+
+task_id로 특정 태스크의 결과를 조회하거나,
+wait=true로 완료될 때까지 대기할 수 있습니다.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "조회할 태스크 ID"
+                    },
+                    "wait": {
+                        "type": "boolean",
+                        "description": "완료될 때까지 대기할지 여부 (기본값: false)",
+                        "default": False
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "대기 시 최대 대기 시간(초) (기본값: 60)",
+                        "default": 60
+                    }
+                },
+                "required": ["task_id"]
+            }
+        ),
+        Tool(
+            name="list_tasks",
+            description="""📋 모든 백그라운드 태스크의 상태를 조회합니다.
+
+실행 중, 완료, 실패한 태스크들의 목록과 상태를 보여줍니다.""",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="wait_all_tasks",
+            description="""⏳ 지정된 태스크들이 모두 완료될 때까지 대기합니다.
+
+task_ids를 지정하지 않으면 실행 중인 모든 태스크를 대기합니다.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "대기할 태스크 ID 목록 (비어있으면 전체 대기)"
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "최대 대기 시간(초) (기본값: 120)",
+                        "default": 120
+                    }
+                },
+                "required": []
+            }
         )
     ]
 
@@ -767,6 +983,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await _get_history(arguments)
         elif name == "compact_history":
             return await _compact_history()
+        # 비동기 태스크 관리
+        elif name == "dispatch_agent":
+            return await _dispatch_agent(arguments)
+        elif name == "get_task_result":
+            return await _get_task_result(arguments)
+        elif name == "list_tasks":
+            return await _list_tasks()
+        elif name == "wait_all_tasks":
+            return await _wait_all_tasks(arguments)
         else:
             return [TextContent(type="text", text=f"알 수 없는 도구: {name}")]
     except Exception as e:
@@ -1150,6 +1375,282 @@ def save_agent_history(agent_name: str, request: str, response: str, metadata: d
     except Exception as e:
         # 히스토리 저장 실패는 무시 (메인 기능에 영향 주지 않음)
         pass
+
+
+# ============================================
+# 비동기 태스크 관리 도구 구현
+# ============================================
+
+async def _dispatch_agent(args: dict) -> list[TextContent]:
+    """에이전트를 백그라운드로 실행"""
+    agent = args["agent"]
+    agent_args = args["args"]
+
+    # 에이전트별 코루틴 생성
+    agent_name_map = {
+        "oracle": "Oracle",
+        "frontend_designer": "Frontend Designer",
+        "document_writer": "Document Writer",
+        "ask_gpt": "GPT",
+        "ask_gemini": "Gemini"
+    }
+
+    if agent not in agent_name_map:
+        return [TextContent(
+            type="text",
+            text=f"❌ 지원하지 않는 에이전트: {agent}"
+        )]
+
+    # 에이전트별 코루틴 생성
+    if agent == "oracle":
+        coro = _run_oracle_async(agent_args)
+    elif agent == "frontend_designer":
+        coro = _run_frontend_designer_async(agent_args)
+    elif agent == "document_writer":
+        coro = _run_document_writer_async(agent_args)
+    elif agent == "ask_gpt":
+        coro = _run_gpt_async(agent_args)
+    elif agent == "ask_gemini":
+        coro = _run_gemini_async(agent_args)
+
+    # 백그라운드로 시작
+    task_id = await task_manager.start_task(agent_name_map[agent], coro)
+
+    return [TextContent(
+        type="text",
+        text=f"🚀 **{agent_name_map[agent]}** 백그라운드 실행 시작\n\n**Task ID**: `{task_id}`\n\n결과 조회: `get_task_result(task_id=\"{task_id}\")`"
+    )]
+
+
+async def _get_task_result(args: dict) -> list[TextContent]:
+    """태스크 결과 조회"""
+    task_id = args["task_id"]
+    wait = args.get("wait", False)
+    timeout = args.get("timeout", 60)
+
+    if wait:
+        result = await task_manager.wait_for_task(task_id, timeout=timeout)
+    else:
+        result = task_manager.get_status(task_id)
+
+    if result["status"] == "not_found":
+        return [TextContent(
+            type="text",
+            text=f"❌ 태스크를 찾을 수 없습니다: {task_id}"
+        )]
+
+    if result["status"] == "running":
+        return [TextContent(
+            type="text",
+            text=f"⏳ **{result['agent']}** 실행 중...\n\n**Task ID**: `{task_id}`\n**시작 시간**: {result['started_at']}\n\n`wait=true`로 대기하거나 나중에 다시 조회하세요."
+        )]
+
+    if result["status"] == "timeout":
+        return [TextContent(
+            type="text",
+            text=f"⏰ 타임아웃: {timeout}초 내에 완료되지 않았습니다.\n\n나중에 다시 조회하세요."
+        )]
+
+    if result["status"] == "failed":
+        return [TextContent(
+            type="text",
+            text=f"❌ **{result['agent']}** 실패\n\n**오류**: {result['error']}"
+        )]
+
+    # 완료된 경우
+    agent_result = result["result"]
+    duration = result.get("duration_seconds", 0)
+
+    return [TextContent(
+        type="text",
+        text=f"✅ **{result['agent']}** 완료 ({duration:.1f}초)\n\n---\n\n{agent_result}"
+    )]
+
+
+async def _list_tasks() -> list[TextContent]:
+    """모든 태스크 상태 조회"""
+    all_status = task_manager.get_all_status()
+
+    if not all_status:
+        return [TextContent(
+            type="text",
+            text="📋 실행 중인 태스크가 없습니다."
+        )]
+
+    lines = ["# 📋 태스크 목록\n"]
+
+    running = [(tid, info) for tid, info in all_status.items() if info["status"] == "running"]
+    completed = [(tid, info) for tid, info in all_status.items() if info["status"] == "completed"]
+    failed = [(tid, info) for tid, info in all_status.items() if info["status"] == "failed"]
+
+    if running:
+        lines.append(f"## ⏳ 실행 중 ({len(running)}개)")
+        for tid, info in running:
+            lines.append(f"- `{tid}` - {info['agent']} (시작: {info['started_at']})")
+        lines.append("")
+
+    if completed:
+        lines.append(f"## ✅ 완료 ({len(completed)}개)")
+        for tid, info in completed:
+            lines.append(f"- `{tid}` - {info['agent']}")
+        lines.append("")
+
+    if failed:
+        lines.append(f"## ❌ 실패 ({len(failed)}개)")
+        for tid, info in failed:
+            lines.append(f"- `{tid}` - {info['agent']}")
+
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+async def _wait_all_tasks(args: dict) -> list[TextContent]:
+    """모든 태스크 대기"""
+    task_ids = args.get("task_ids", [])
+    timeout = args.get("timeout", 120)
+
+    if not task_ids:
+        # 실행 중인 모든 태스크
+        all_status = task_manager.get_all_status()
+        task_ids = [tid for tid, info in all_status.items() if info["status"] == "running"]
+
+    if not task_ids:
+        return [TextContent(
+            type="text",
+            text="📋 대기할 태스크가 없습니다."
+        )]
+
+    results = await task_manager.wait_for_all(task_ids, timeout=timeout)
+
+    lines = [f"# ⏳ {len(task_ids)}개 태스크 대기 완료\n"]
+
+    for tid, result in results.items():
+        if result["status"] == "completed":
+            lines.append(f"✅ `{tid}` - {result['agent']} 완료")
+        elif result["status"] == "failed":
+            lines.append(f"❌ `{tid}` - {result['agent']} 실패: {result.get('error', 'Unknown error')}")
+        elif result["status"] == "running":
+            lines.append(f"⏳ `{tid}` - {result['agent']} 아직 실행 중 (타임아웃)")
+        else:
+            lines.append(f"❓ `{tid}` - 상태: {result['status']}")
+
+    lines.append("\n각 결과 상세 조회: `get_task_result(task_id=\"...\")`")
+
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+# 비동기 에이전트 실행 헬퍼 함수들
+async def _run_oracle_async(args: dict) -> str:
+    """Oracle 비동기 실행"""
+    problem = args["problem"]
+    context = args.get("context", "")
+
+    system_prompt = """You are Oracle, an expert reasoning agent specialized in:
+- Complex system architecture design
+- Algorithm optimization and analysis
+- Technical decision making
+- Root cause analysis for bugs
+- Refactoring strategy planning
+
+Approach every problem with step-by-step reasoning. Consider multiple perspectives,
+trade-offs, and edge cases. Provide actionable recommendations with clear justifications."""
+
+    full_prompt = f"""## Problem
+{problem}
+
+## Context
+{context if context else "No additional context provided."}
+
+Please analyze this problem step by step and provide your recommendations."""
+
+    result, method = await run_gpt(full_prompt, system_prompt=system_prompt)
+    save_agent_history("Oracle", problem, result, {"model": method})
+    return f"## 🔮 Oracle 분석 결과\n**모델**: {method}\n\n---\n\n{result}"
+
+
+async def _run_frontend_designer_async(args: dict) -> str:
+    """Frontend Designer 비동기 실행"""
+    request = args["request"]
+    framework = args.get("framework", "react")
+    styling = args.get("styling", "tailwind")
+    existing_code = args.get("existing_code", "")
+
+    prompt = f"""You are a Frontend Designer agent specialized in creating beautiful,
+accessible, and responsive UI/UX code.
+
+## Request
+{request}
+
+## Technical Stack
+- Framework: {framework}
+- Styling: {styling}
+
+{f"## Existing Code to Modify/Improve{chr(10)}{existing_code}" if existing_code else ""}
+
+Please generate clean, well-structured code following best practices for the specified stack."""
+
+    result, method = await run_gemini_agent(prompt)
+    save_agent_history("Frontend Designer", request, result, {"framework": framework, "styling": styling})
+    return f"## 🎨 Frontend Designer 결과\n**방식**: {method}\n**Framework**: {framework} + {styling}\n\n---\n\n{result}"
+
+
+async def _run_document_writer_async(args: dict) -> str:
+    """Document Writer 비동기 실행"""
+    request = args["request"]
+    code_or_context = args.get("code_or_context", "")
+    doc_type = args.get("doc_type", "readme")
+    language = args.get("language", "korean")
+
+    doc_type_map = {
+        "readme": "README.md",
+        "api": "API Documentation",
+        "comment": "Code Comments",
+        "spec": "Technical Specification",
+        "changelog": "CHANGELOG",
+        "guide": "User Guide"
+    }
+
+    lang_instruction = "Write in Korean (한국어로 작성)" if language == "korean" else "Write in English"
+
+    prompt = f"""You are a Document Writer agent specialized in creating clear,
+comprehensive technical documentation.
+
+## Document Type
+{doc_type_map.get(doc_type, doc_type)}
+
+## Request
+{request}
+
+## Code/Context
+{code_or_context if code_or_context else "No code provided."}
+
+## Language
+{lang_instruction}
+
+Please write professional documentation."""
+
+    result, method = await run_gemini_agent(prompt)
+    save_agent_history("Document Writer", request, result, {"doc_type": doc_type, "language": language})
+    return f"## 📝 Document Writer 결과\n**방식**: {method}\n**문서 유형**: {doc_type_map.get(doc_type, doc_type)}\n\n---\n\n{result}"
+
+
+async def _run_gpt_async(args: dict) -> str:
+    """GPT 비동기 실행"""
+    prompt = args["prompt"]
+    model = args.get("model", "gpt-4o")
+    use_api = args.get("use_api", False)
+
+    result, method = await run_gpt(prompt, model, use_api=use_api)
+    return f"## GPT 응답\n**방식**: {method}\n\n---\n\n{result}"
+
+
+async def _run_gemini_async(args: dict) -> str:
+    """Gemini 비동기 실행"""
+    prompt = args["prompt"]
+    model = args.get("model", "gemini-3")
+    use_api = args.get("use_api", False)
+
+    result, method = await run_gemini_agent(prompt, model, use_api=use_api)
+    return f"## Gemini 응답\n**방식**: {method}\n\n---\n\n{result}"
 
 
 def main():
