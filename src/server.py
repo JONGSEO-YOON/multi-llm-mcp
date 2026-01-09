@@ -215,31 +215,63 @@ def has_gemini_api_key() -> bool:
 # GPT 실행 함수들
 # ============================================
 
-async def run_codex(prompt: str, model: str = "o4-mini") -> str:
-    """Codex CLI를 통해 GPT에게 질문 (OAuth 인증)"""
+async def run_codex(prompt: str) -> str:
+    """Codex CLI를 통해 GPT에게 질문 (OAuth 인증)
+
+    Codex CLI 0.79.0+ 사용
+    - ChatGPT 계정 로그인 시 자동으로 gpt-5.2-codex 모델 사용
+    - --full-auto: 자동 실행 모드 (샌드박스 내에서 승인 없이 실행)
+    - -o: 마지막 응답을 파일로 저장
+
+    주의: ChatGPT 계정 인증 시 --model 옵션으로 모델 지정 불가
+    """
     if not has_codex_cli():
         raise RuntimeError("Codex CLI가 설치되어 있지 않습니다. 'npm install -g @openai/codex'로 설치하세요.")
 
-    process = await asyncio.create_subprocess_exec(
-        CODEX_PATH, "exec", prompt,
-        "--model", model,
-        "--quiet",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    import tempfile
 
-    stdout, stderr = await process.communicate()
+    # 임시 파일로 출력 받기
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp:
+        output_file = tmp.name
 
-    if process.returncode != 0:
-        error_msg = stderr.decode().strip()
-        if "not logged in" in error_msg.lower() or "auth" in error_msg.lower():
-            raise RuntimeError(
-                "Codex CLI에 로그인이 필요합니다.\n"
-                "터미널에서 'codex' 명령어를 실행하고 ChatGPT 계정으로 로그인하세요."
-            )
-        raise RuntimeError(f"Codex CLI 오류: {error_msg}")
+    try:
+        # ChatGPT 계정 인증 시 모델 지정 불가 - 자동으로 gpt-5.2-codex 사용
+        process = await asyncio.create_subprocess_exec(
+            CODEX_PATH, "exec", prompt,
+            "--full-auto",
+            "-o", output_file,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
 
-    return stdout.decode().strip()
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            error_msg = stderr.decode().strip()
+            stdout_msg = stdout.decode().strip()
+            combined_msg = f"{error_msg}\n{stdout_msg}".strip()
+
+            if "not logged in" in combined_msg.lower() or "auth" in combined_msg.lower() or "login" in combined_msg.lower():
+                raise RuntimeError(
+                    "Codex CLI에 로그인이 필요합니다.\n"
+                    "터미널에서 'codex' 명령어를 실행하고 ChatGPT 계정으로 로그인하세요."
+                )
+            raise RuntimeError(f"Codex CLI 오류: {combined_msg}")
+
+        # 출력 파일에서 결과 읽기
+        if os.path.exists(output_file):
+            with open(output_file, 'r', encoding='utf-8') as f:
+                result = f.read().strip()
+            if result:
+                return result
+
+        # 파일이 비어있으면 stdout 반환
+        return stdout.decode().strip()
+
+    finally:
+        # 임시 파일 정리
+        if os.path.exists(output_file):
+            os.remove(output_file)
 
 
 async def run_openai_api(prompt: str, model: str = "gpt-4o", system_prompt: str = "",
@@ -349,16 +381,20 @@ async def run_gemini_api(prompt: str, model: str = "gemini-1.5-flash",
 # 역할별 실행 함수들
 # ============================================
 
-async def run_gpt(prompt: str, model: str = "gpt-5.2", system_prompt: str = "", use_api: bool = False) -> tuple[str, str]:
-    """GPT 실행 (CLI 우선) - 기본 모델: GPT-5.2"""
+async def run_gpt(prompt: str, model: str = "gpt-4o", system_prompt: str = "", use_api: bool = False) -> tuple[str, str]:
+    """GPT 실행 (CLI 우선)
+
+    - Codex CLI (ChatGPT 계정): 자동으로 gpt-5.2-codex 사용 (모델 지정 불가)
+    - OpenAI API: model 파라미터로 지정된 모델 사용
+    """
     if use_api or (not has_codex_cli() and has_openai_api_key()):
         result = await run_openai_api(prompt, model, system_prompt)
         return result, f"OpenAI API ({model})"
     elif has_codex_cli():
-        # CLI에서도 gpt-5.2 사용
+        # Codex CLI는 ChatGPT 계정 인증 시 자동으로 gpt-5.2-codex 사용
         full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-        result = await run_codex(full_prompt, model)
-        return result, f"Codex CLI ({model})"
+        result = await run_codex(full_prompt)
+        return result, "Codex CLI (gpt-5.2-codex)"
     elif has_openai_api_key():
         result = await run_openai_api(prompt, model, system_prompt)
         return result, f"OpenAI API ({model})"
@@ -408,12 +444,10 @@ async def list_tools() -> list[Tool]:
             description="""GPT 모델에게 질문합니다.
 
 인증 방식 (우선순위):
-1. Codex CLI (ChatGPT 계정 로그인) - API 키 불필요
-2. OpenAI API 키 - .env에 OPENAI_API_KEY 설정
+1. Codex CLI (ChatGPT 계정 로그인) - API 키 불필요, 자동으로 gpt-5.2-codex 사용
+2. OpenAI API 키 - .env에 OPENAI_API_KEY 설정, model 파라미터로 모델 선택 가능
 
-Codex CLI 로그인: 터미널에서 'codex' 실행 후 ChatGPT 계정으로 로그인
-
-기본 모델: GPT-5.2""",
+Codex CLI 로그인: 터미널에서 'codex' 실행 후 ChatGPT 계정으로 로그인""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -423,9 +457,9 @@ Codex CLI 로그인: 터미널에서 'codex' 실행 후 ChatGPT 계정으로 로
                     },
                     "model": {
                         "type": "string",
-                        "description": "사용할 모델 (기본값: gpt-5.2)",
-                        "enum": ["gpt-5.2", "gpt-5", "gpt-4o", "gpt-4o-mini"],
-                        "default": "gpt-5.2"
+                        "description": "API 사용 시 모델 선택 (CLI 사용 시 무시됨, 자동으로 gpt-5.2-codex 사용)",
+                        "enum": ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini"],
+                        "default": "gpt-4o"
                     },
                     "use_api": {
                         "type": "boolean",
@@ -438,10 +472,10 @@ Codex CLI 로그인: 터미널에서 'codex' 실행 후 ChatGPT 계정으로 로
         ),
         Tool(
             name="oracle",
-            description="""🔮 Oracle - 고급 추론 에이전트 (GPT-5.2)
+            description="""🔮 Oracle - 고급 추론 에이전트
 
 복잡한 문제 해결, 아키텍처 설계, 알고리즘 설계 등 깊은 추론이 필요한 작업에 사용합니다.
-GPT-5.2를 사용하여 step-by-step으로 분석합니다.
+Codex CLI 사용 시 자동으로 gpt-5.2-codex 모델로 step-by-step 분석합니다.
 
 사용 예시:
 - 복잡한 시스템 아키텍처 설계
@@ -459,12 +493,6 @@ GPT-5.2를 사용하여 step-by-step으로 분석합니다.
                     "context": {
                         "type": "string",
                         "description": "관련 코드, 현재 상황, 제약 조건 등 컨텍스트"
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "사용할 모델",
-                        "enum": ["gpt-5.2", "gpt-5", "gpt-4o"],
-                        "default": "gpt-5.2"
                     }
                 },
                 "required": ["problem"]
@@ -764,10 +792,12 @@ async def _ask_gpt(args: dict) -> list[TextContent]:
 
 
 async def _oracle(args: dict) -> list[TextContent]:
-    """Oracle - 고급 추론 에이전트"""
+    """Oracle - 고급 추론 에이전트
+
+    Codex CLI 사용 시 자동으로 gpt-5.2-codex 사용
+    """
     problem = args["problem"]
     context = args.get("context", "")
-    model = args.get("model", "gpt-5.2")
 
     system_prompt = """You are Oracle, an expert reasoning agent specialized in:
 - Complex system architecture design
@@ -787,7 +817,7 @@ trade-offs, and edge cases. Provide actionable recommendations with clear justif
 
 Please analyze this problem step by step and provide your recommendations."""
 
-    result, method = await run_gpt(full_prompt, model, system_prompt)
+    result, method = await run_gpt(full_prompt, system_prompt=system_prompt)
 
     # 히스토리에 저장
     save_agent_history("Oracle", problem, result, {"model": method, "context": context[:200] if context else None})
@@ -939,8 +969,9 @@ async def _compare_models(args: dict) -> list[TextContent]:
     """두 모델 비교"""
     prompt = args["prompt"]
 
-    gpt_task = run_gpt(prompt, "gpt-5.2")
-    gemini_task = run_gemini_agent(prompt, "gemini-3")
+    # Codex CLI는 자동으로 gpt-5.2-codex 사용, Gemini CLI는 gemini-3 사용
+    gpt_task = run_gpt(prompt)
+    gemini_task = run_gemini_agent(prompt)
 
     (gpt_result, gpt_method), (gemini_result, gemini_method) = await asyncio.gather(gpt_task, gemini_task)
 
