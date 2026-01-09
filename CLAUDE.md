@@ -43,3 +43,11 @@
 2. 일반적인 코드 탐색, 검색, 편집은 Claude가 직접 수행
 3. 도구 사용 전 사용자에게 물어볼 필요 없음
 
+### 자동 워크플로우
+**코드 구현 완료 시 반드시 review_implementation 실행:**
+1. 사용자 요청에 따라 코드 구현 완료
+2. **자동으로** `review_implementation` 호출하여 요구사항 충족 여부 검증
+3. 피드백 결과에 따라:
+   - COMPLETE: 사용자에게 완료 보고
+   - INCOMPLETE/NEEDS REVISION: 누락된 부분 자동으로 수정 후 다시 검증
+
