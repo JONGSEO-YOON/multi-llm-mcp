@@ -152,12 +152,23 @@ GEMINI_API_KEY=...
 - `gpt-4-turbo`
 
 ### Gemini (via CLI)
-- `gemini-2.5-pro` (기본값, 1M 토큰 컨텍스트)
+- `gemini-3` (기본값)
+- 이미지 분석 지원 (`@./path/to/image.png` 형식)
 
 ### Gemini (via API)
 - `gemini-1.5-flash` (기본값, 빠름)
 - `gemini-1.5-pro` (고품질)
 - `gemini-2.0-flash-exp`
+
+## 이미지 분석 (Multimodal)
+
+Gemini CLI는 이미지를 지원합니다. API 키 없이도 사용 가능합니다.
+
+```
+# Gemini CLI로 이미지 분석
+"이 스크린샷 분석해줘" + 이미지 경로 전달
+→ multimodal_look 도구 사용
+```
 
 ## 문제 해결
 

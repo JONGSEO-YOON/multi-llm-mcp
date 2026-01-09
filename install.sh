@@ -119,7 +119,7 @@ SUB_AGENT_INSTRUCTIONS='
 - CHANGELOG 작성
 
 ### 👁️ Multimodal Looker (Gemini 3) - `mcp__multi-llm__multimodal_look`
-**사용 시점**: 이미지/스크린샷 분석이 필요할 때
+**사용 시점**: 이미지/스크린샷 분석이 필요할 때 (API 키 불필요, CLI로 사용 가능)
 - UI 스크린샷에서 코드 생성
 - 디자인 피드백 제공
 - 에러 스크린샷 분석

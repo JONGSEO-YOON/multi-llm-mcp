@@ -125,13 +125,22 @@ async def run_openai_api(prompt: str, model: str = "gpt-4o", system_prompt: str 
 # Gemini 실행 함수들
 # ============================================
 
-async def run_gemini(prompt: str) -> str:
-    """Gemini CLI를 통해 Gemini에게 질문 (OAuth 인증)"""
+async def run_gemini(prompt: str, image_path: str = None) -> str:
+    """Gemini CLI를 통해 Gemini에게 질문 (OAuth 인증, 이미지 지원)
+
+    이미지를 사용할 때는 @image_path 형식으로 프롬프트에 추가합니다.
+    """
     if not has_gemini_cli():
         raise RuntimeError("Gemini CLI가 설치되어 있지 않습니다. 'npm install -g @google/gemini-cli'로 설치하세요.")
 
+    # 이미지가 있으면 프롬프트에 @path 형식으로 추가
+    if image_path and os.path.exists(image_path):
+        full_prompt = f"{prompt}\n\n이미지: @{image_path}"
+    else:
+        full_prompt = prompt
+
     process = await asyncio.create_subprocess_exec(
-        GEMINI_PATH, "-p", prompt,
+        GEMINI_PATH, full_prompt,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
@@ -201,21 +210,27 @@ async def run_gpt(prompt: str, model: str = "gpt-5.2", system_prompt: str = "", 
 
 
 async def run_gemini_agent(prompt: str, model: str = "gemini-3", use_api: bool = False, image_path: str = None) -> tuple[str, str]:
-    """Gemini 실행 (CLI 우선, 이미지는 API만) - 기본 모델: Gemini 3"""
-    # 이미지가 있으면 API 강제
-    if image_path:
-        if not has_gemini_api_key():
-            raise RuntimeError("이미지 분석은 API 키가 필요합니다. GEMINI_API_KEY를 설정하세요.")
-        result = await run_gemini_api(prompt, model, image_path=image_path)
-        return result, f"Gemini API ({model}) + Image"
+    """Gemini 실행 (CLI 우선, 이미지도 CLI로 지원) - 기본 모델: Gemini 3
 
+    Gemini CLI는 @./path/to/image.png 형식으로 이미지를 지원합니다.
+    """
     if use_api or (not has_gemini_cli() and has_gemini_api_key()):
+        if image_path:
+            result = await run_gemini_api(prompt, model, image_path=image_path)
+            return result, f"Gemini API ({model}) + Image"
         result = await run_gemini_api(prompt, model)
         return result, f"Gemini API ({model})"
     elif has_gemini_cli():
-        result = await run_gemini(prompt)
-        return result, "Gemini CLI (gemini-3)"
+        # CLI로 이미지 지원 (@ 형식)
+        result = await run_gemini(prompt, image_path=image_path)
+        method = "Gemini CLI (gemini-3)"
+        if image_path:
+            method += " + Image"
+        return result, method
     elif has_gemini_api_key():
+        if image_path:
+            result = await run_gemini_api(prompt, model, image_path=image_path)
+            return result, f"Gemini API ({model}) + Image"
         result = await run_gemini_api(prompt, model)
         return result, f"Gemini API ({model})"
     else:
@@ -422,7 +437,8 @@ README, API 문서, 주석, 기술 문서 등을 작성합니다.
 스크린샷, UI 이미지, 다이어그램 등을 분석합니다.
 이미지를 보고 코드 생성, 버그 발견, 디자인 피드백 등을 제공합니다.
 
-⚠️ 이 기능은 Gemini API 키가 필요합니다 (CLI 미지원)
+Gemini CLI의 @path 기능을 사용하여 이미지를 분석합니다.
+API 키 없이 CLI 로그인만으로 사용 가능합니다.
 
 사용 예시:
 - 스크린샷에서 UI 코드 생성
@@ -754,14 +770,15 @@ async def _check_status() -> list[TextContent]:
     if has_gemini_cli():
         status_lines.append("✅ Gemini CLI 설치됨")
         status_lines.append("   → 'gemini' 명령어로 Google 계정 로그인 가능")
+        status_lines.append("   → 이미지 분석(Multimodal)도 CLI로 사용 가능")
     else:
         status_lines.append("❌ Gemini CLI 미설치")
         status_lines.append("   → 'npm install -g @google/gemini-cli'로 설치")
 
     if has_gemini_api_key():
-        status_lines.append("✅ GEMINI_API_KEY 설정됨 (Multimodal 기능 사용 가능)")
+        status_lines.append("✅ GEMINI_API_KEY 설정됨 (선택사항)")
     else:
-        status_lines.append("⚠️ GEMINI_API_KEY 미설정 (Multimodal 기능 제한)")
+        status_lines.append("⚪ GEMINI_API_KEY 미설정 (선택사항, CLI 우선)")
 
     return [TextContent(type="text", text="\n".join(status_lines))]
 
@@ -802,19 +819,10 @@ async def _login_guide() -> list[TextContent]:
 4. 로그인 완료 후 터미널로 돌아가면 자동으로 인증됨
 
 **무료 사용량**: 60 요청/분, 1,000 요청/일
-**사용 가능한 에이전트**: Frontend Designer, Document Writer, ask_gemini
+**사용 가능한 에이전트**: Frontend Designer, Document Writer, Multimodal Looker, ask_gemini
 
----
-
-## Multimodal Looker (이미지 분석)
-
-이미지 분석 기능은 **Gemini API 키**가 필요합니다:
-
-1. https://aistudio.google.com/app/apikey 에서 API 키 발급
-2. `.env` 파일에 추가:
-   ```
-   GEMINI_API_KEY=your-api-key-here
-   ```
+💡 **이미지 분석(Multimodal)도 CLI로 사용 가능!**
+   Gemini CLI는 `@./path/to/image.png` 형식으로 이미지를 지원합니다.
 
 ---
 
