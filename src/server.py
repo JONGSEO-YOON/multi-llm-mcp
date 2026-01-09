@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
 Multi-LLM MCP Server
-Claude Code에서 GPT와 Gemini를 도구로 사용할 수 있게 해주는 MCP 서버
+Claude Code에서 GPT와 Gemini를 역할별 Sub Agent로 사용할 수 있게 해주는 MCP 서버
+
+역할 분담:
+- Oracle (GPT o1/o3): 고급 추론, 아키텍처 설계, 복잡한 문제 해결
+- Frontend Designer (Gemini): UI/UX 코드 작성, 컴포넌트 설계
+- Document Writer (Gemini): README, 문서, 주석 작성
+- Multimodal Looker (Gemini): 이미지/스크린샷 분석
+- Librarian/Explore (Claude): 코드베이스 탐색 (기본 역할)
 
 인증 방식:
 - GPT: Codex CLI (ChatGPT 계정 로그인) 또는 API 키
@@ -12,6 +19,7 @@ import os
 import asyncio
 import subprocess
 import shutil
+import base64
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -31,31 +39,30 @@ GEMINI_PATH = shutil.which("gemini")
 
 
 def has_codex_cli() -> bool:
-    """Codex CLI가 설치되어 있는지 확인"""
     return CODEX_PATH is not None
 
 
 def has_gemini_cli() -> bool:
-    """Gemini CLI가 설치되어 있는지 확인"""
     return GEMINI_PATH is not None
 
 
 def has_openai_api_key() -> bool:
-    """OpenAI API 키가 설정되어 있는지 확인"""
     return bool(os.getenv("OPENAI_API_KEY"))
 
 
 def has_gemini_api_key() -> bool:
-    """Gemini API 키가 설정되어 있는지 확인"""
     return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
 
+
+# ============================================
+# GPT 실행 함수들
+# ============================================
 
 async def run_codex(prompt: str, model: str = "o4-mini") -> str:
     """Codex CLI를 통해 GPT에게 질문 (OAuth 인증)"""
     if not has_codex_cli():
         raise RuntimeError("Codex CLI가 설치되어 있지 않습니다. 'npm install -g @openai/codex'로 설치하세요.")
 
-    # codex exec "prompt" 형식으로 실행
     process = await asyncio.create_subprocess_exec(
         CODEX_PATH, "exec", prompt,
         "--model", model,
@@ -78,12 +85,51 @@ async def run_codex(prompt: str, model: str = "o4-mini") -> str:
     return stdout.decode().strip()
 
 
+async def run_openai_api(prompt: str, model: str = "gpt-4o", system_prompt: str = "",
+                         temperature: float = 0.7, max_tokens: int = 4096) -> str:
+    """OpenAI API를 직접 호출 (API 키 인증)"""
+    from openai import OpenAI
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다.")
+
+    client = OpenAI(api_key=api_key)
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    # o1/o3 모델은 system prompt 미지원
+    if model.startswith("o1") or model.startswith("o3"):
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        messages = [{"role": "user", "content": full_prompt}]
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_completion_tokens=max_tokens
+        )
+    else:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+
+    return response.choices[0].message.content
+
+
+# ============================================
+# Gemini 실행 함수들
+# ============================================
+
 async def run_gemini(prompt: str) -> str:
     """Gemini CLI를 통해 Gemini에게 질문 (OAuth 인증)"""
     if not has_gemini_cli():
         raise RuntimeError("Gemini CLI가 설치되어 있지 않습니다. 'npm install -g @google/gemini-cli'로 설치하세요.")
 
-    # gemini -p "prompt" 형식으로 실행 (non-interactive)
     process = await asyncio.create_subprocess_exec(
         GEMINI_PATH, "-p", prompt,
         stdout=asyncio.subprocess.PIPE,
@@ -104,44 +150,10 @@ async def run_gemini(prompt: str) -> str:
     return stdout.decode().strip()
 
 
-async def run_openai_api(prompt: str, model: str = "gpt-4o", system_prompt: str = "You are a helpful assistant.",
-                         temperature: float = 0.7, max_tokens: int = 4096) -> str:
-    """OpenAI API를 직접 호출 (API 키 인증)"""
-    from openai import OpenAI
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다.")
-
-    client = OpenAI(api_key=api_key)
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt}
-    ]
-
-    # o1 모델들은 system prompt와 temperature를 지원하지 않음
-    if model.startswith("o1") or model.startswith("o3"):
-        messages = [{"role": "user", "content": prompt}]
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_completion_tokens=max_tokens
-        )
-    else:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-
-    return response.choices[0].message.content
-
-
 async def run_gemini_api(prompt: str, model: str = "gemini-1.5-flash",
-                         temperature: float = 0.7, max_tokens: int = 4096) -> str:
-    """Gemini API를 직접 호출 (API 키 인증)"""
+                         temperature: float = 0.7, max_tokens: int = 4096,
+                         image_path: str = None) -> str:
+    """Gemini API를 직접 호출 (API 키 인증, 이미지 지원)"""
     import google.generativeai as genai
 
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -151,18 +163,74 @@ async def run_gemini_api(prompt: str, model: str = "gemini-1.5-flash",
     genai.configure(api_key=api_key)
     model_instance = genai.GenerativeModel(model)
 
+    content = [prompt]
+
+    # 이미지가 있으면 추가
+    if image_path and os.path.exists(image_path):
+        import PIL.Image
+        img = PIL.Image.open(image_path)
+        content = [prompt, img]
+
     response = model_instance.generate_content(
-        prompt,
+        content,
         generation_config={"temperature": temperature, "max_output_tokens": max_tokens}
     )
 
     return response.text
 
 
+# ============================================
+# 역할별 실행 함수들
+# ============================================
+
+async def run_gpt(prompt: str, model: str = "gpt-5.2", system_prompt: str = "", use_api: bool = False) -> tuple[str, str]:
+    """GPT 실행 (CLI 우선) - 기본 모델: GPT-5.2"""
+    if use_api or (not has_codex_cli() and has_openai_api_key()):
+        result = await run_openai_api(prompt, model, system_prompt)
+        return result, f"OpenAI API ({model})"
+    elif has_codex_cli():
+        # CLI에서도 gpt-5.2 사용
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        result = await run_codex(full_prompt, model)
+        return result, f"Codex CLI ({model})"
+    elif has_openai_api_key():
+        result = await run_openai_api(prompt, model, system_prompt)
+        return result, f"OpenAI API ({model})"
+    else:
+        raise RuntimeError("GPT 사용 불가: Codex CLI 로그인 또는 API 키 설정 필요")
+
+
+async def run_gemini_agent(prompt: str, model: str = "gemini-3", use_api: bool = False, image_path: str = None) -> tuple[str, str]:
+    """Gemini 실행 (CLI 우선, 이미지는 API만) - 기본 모델: Gemini 3"""
+    # 이미지가 있으면 API 강제
+    if image_path:
+        if not has_gemini_api_key():
+            raise RuntimeError("이미지 분석은 API 키가 필요합니다. GEMINI_API_KEY를 설정하세요.")
+        result = await run_gemini_api(prompt, model, image_path=image_path)
+        return result, f"Gemini API ({model}) + Image"
+
+    if use_api or (not has_gemini_cli() and has_gemini_api_key()):
+        result = await run_gemini_api(prompt, model)
+        return result, f"Gemini API ({model})"
+    elif has_gemini_cli():
+        result = await run_gemini(prompt)
+        return result, "Gemini CLI (gemini-3)"
+    elif has_gemini_api_key():
+        result = await run_gemini_api(prompt, model)
+        return result, f"Gemini API ({model})"
+    else:
+        raise RuntimeError("Gemini 사용 불가: Gemini CLI 로그인 또는 API 키 설정 필요")
+
+
+# ============================================
+# MCP 도구 정의
+# ============================================
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """사용 가능한 도구 목록 반환"""
     return [
+        # ========== Oracle (GPT o1/o3) ==========
         Tool(
             name="ask_gpt",
             description="""GPT 모델에게 질문합니다.
@@ -173,7 +241,7 @@ async def list_tools() -> list[Tool]:
 
 Codex CLI 로그인: 터미널에서 'codex' 실행 후 ChatGPT 계정으로 로그인
 
-기본 모델: gpt-4o (API) / o4-mini (Codex CLI)""",
+기본 모델: GPT-5.2""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -183,9 +251,9 @@ Codex CLI 로그인: 터미널에서 'codex' 실행 후 ChatGPT 계정으로 로
                     },
                     "model": {
                         "type": "string",
-                        "description": "사용할 모델 (기본값: gpt-4o 또는 o4-mini)",
-                        "enum": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o1-mini", "o3-mini", "o4-mini"],
-                        "default": "gpt-4o"
+                        "description": "사용할 모델 (기본값: gpt-5.2)",
+                        "enum": ["gpt-5.2", "gpt-5", "gpt-4o", "gpt-4o-mini"],
+                        "default": "gpt-5.2"
                     },
                     "use_api": {
                         "type": "boolean",
@@ -197,6 +265,42 @@ Codex CLI 로그인: 터미널에서 'codex' 실행 후 ChatGPT 계정으로 로
             }
         ),
         Tool(
+            name="oracle",
+            description="""🔮 Oracle - 고급 추론 에이전트 (GPT-5.2)
+
+복잡한 문제 해결, 아키텍처 설계, 알고리즘 설계 등 깊은 추론이 필요한 작업에 사용합니다.
+GPT-5.2를 사용하여 step-by-step으로 분석합니다.
+
+사용 예시:
+- 복잡한 시스템 아키텍처 설계
+- 알고리즘 최적화 방안 분석
+- 기술 선택 의사결정
+- 버그의 근본 원인 분석
+- 리팩토링 전략 수립""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "problem": {
+                        "type": "string",
+                        "description": "해결해야 할 복잡한 문제 또는 설계 요청"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "관련 코드, 현재 상황, 제약 조건 등 컨텍스트"
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "사용할 모델",
+                        "enum": ["gpt-5.2", "gpt-5", "gpt-4o"],
+                        "default": "gpt-5.2"
+                    }
+                },
+                "required": ["problem"]
+            }
+        ),
+
+        # ========== Gemini 에이전트들 ==========
+        Tool(
             name="ask_gemini",
             description="""Gemini 모델에게 질문합니다.
 
@@ -206,7 +310,7 @@ Codex CLI 로그인: 터미널에서 'codex' 실행 후 ChatGPT 계정으로 로
 
 Gemini CLI 로그인: 터미널에서 'gemini' 실행 후 Google 계정으로 로그인
 
-기본 모델: gemini-2.5-pro (CLI) / gemini-1.5-flash (API)""",
+기본 모델: Gemini 3""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -216,9 +320,9 @@ Gemini CLI 로그인: 터미널에서 'gemini' 실행 후 Google 계정으로 �
                     },
                     "model": {
                         "type": "string",
-                        "description": "사용할 모델 (API 모드에서만 적용)",
-                        "enum": ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"],
-                        "default": "gemini-1.5-flash"
+                        "description": "사용할 모델 (기본값: gemini-3)",
+                        "enum": ["gemini-3", "gemini-2.5-pro", "gemini-2.0-flash"],
+                        "default": "gemini-3"
                     },
                     "use_api": {
                         "type": "boolean",
@@ -229,6 +333,126 @@ Gemini CLI 로그인: 터미널에서 'gemini' 실행 후 Google 계정으로 �
                 "required": ["prompt"]
             }
         ),
+        Tool(
+            name="frontend_designer",
+            description="""🎨 Frontend Designer - UI/UX 코드 작성 에이전트 (Gemini)
+
+프론트엔드 UI/UX 코드를 작성합니다. React, Vue, HTML/CSS, Tailwind 등
+다양한 프레임워크와 스타일링을 지원합니다.
+
+사용 예시:
+- React 컴포넌트 작성
+- Tailwind CSS 스타일링
+- 반응형 레이아웃 구현
+- 애니메이션 효과 추가
+- 접근성(a11y) 개선
+- 디자인 시스템 컴포넌트 생성""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "string",
+                        "description": "만들고 싶은 UI/UX 컴포넌트 또는 페이지 설명"
+                    },
+                    "framework": {
+                        "type": "string",
+                        "description": "사용할 프레임워크",
+                        "enum": ["react", "vue", "svelte", "html", "nextjs", "flutter"],
+                        "default": "react"
+                    },
+                    "styling": {
+                        "type": "string",
+                        "description": "스타일링 방식",
+                        "enum": ["tailwind", "css", "styled-components", "scss", "emotion"],
+                        "default": "tailwind"
+                    },
+                    "existing_code": {
+                        "type": "string",
+                        "description": "기존 코드 (수정/개선 시)"
+                    }
+                },
+                "required": ["request"]
+            }
+        ),
+        Tool(
+            name="document_writer",
+            description="""📝 Document Writer - 문서 작성 에이전트 (Gemini)
+
+README, API 문서, 주석, 기술 문서 등을 작성합니다.
+코드를 분석하고 이해하기 쉬운 문서를 생성합니다.
+
+사용 예시:
+- README.md 작성
+- API 문서 생성
+- 코드 주석 추가
+- 기술 스펙 문서 작성
+- CHANGELOG 생성
+- 사용자 가이드 작성""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "string",
+                        "description": "작성할 문서의 종류와 요구사항"
+                    },
+                    "code_or_context": {
+                        "type": "string",
+                        "description": "문서화할 코드 또는 프로젝트 컨텍스트"
+                    },
+                    "doc_type": {
+                        "type": "string",
+                        "description": "문서 종류",
+                        "enum": ["readme", "api", "comment", "spec", "changelog", "guide"],
+                        "default": "readme"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "문서 작성 언어",
+                        "enum": ["korean", "english"],
+                        "default": "korean"
+                    }
+                },
+                "required": ["request"]
+            }
+        ),
+        Tool(
+            name="multimodal_look",
+            description="""👁️ Multimodal Looker - 이미지 분석 에이전트 (Gemini)
+
+스크린샷, UI 이미지, 다이어그램 등을 분석합니다.
+이미지를 보고 코드 생성, 버그 발견, 디자인 피드백 등을 제공합니다.
+
+⚠️ 이 기능은 Gemini API 키가 필요합니다 (CLI 미지원)
+
+사용 예시:
+- 스크린샷에서 UI 코드 생성
+- UI 버그/이슈 발견
+- 디자인 피드백 제공
+- 아키텍처 다이어그램 분석
+- 에러 스크린샷 분석""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "분석할 이미지 파일 경로 (절대 경로)"
+                    },
+                    "request": {
+                        "type": "string",
+                        "description": "이미지에 대해 분석하거나 요청할 내용"
+                    },
+                    "task_type": {
+                        "type": "string",
+                        "description": "작업 유형",
+                        "enum": ["generate_code", "find_bugs", "design_feedback", "analyze", "extract_text"],
+                        "default": "analyze"
+                    }
+                },
+                "required": ["image_path", "request"]
+            }
+        ),
+
+        # ========== 비교 및 유틸리티 ==========
         Tool(
             name="compare_models",
             description="""같은 질문을 GPT와 Gemini 모두에게 보내고 결과를 비교합니다.
@@ -270,19 +494,34 @@ Gemini CLI 로그인: 터미널에서 'gemini' 실행 후 Google 계정으로 �
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """도구 실행"""
 
-    if name == "ask_gpt":
-        return await _ask_gpt(arguments)
-    elif name == "ask_gemini":
-        return await _ask_gemini(arguments)
-    elif name == "compare_models":
-        return await _compare_models(arguments)
-    elif name == "check_status":
-        return await _check_status()
-    elif name == "login_guide":
-        return await _login_guide()
-    else:
-        return [TextContent(type="text", text=f"알 수 없는 도구: {name}")]
+    try:
+        if name == "ask_gpt":
+            return await _ask_gpt(arguments)
+        elif name == "oracle":
+            return await _oracle(arguments)
+        elif name == "ask_gemini":
+            return await _ask_gemini(arguments)
+        elif name == "frontend_designer":
+            return await _frontend_designer(arguments)
+        elif name == "document_writer":
+            return await _document_writer(arguments)
+        elif name == "multimodal_look":
+            return await _multimodal_look(arguments)
+        elif name == "compare_models":
+            return await _compare_models(arguments)
+        elif name == "check_status":
+            return await _check_status()
+        elif name == "login_guide":
+            return await _login_guide()
+        else:
+            return [TextContent(type="text", text=f"알 수 없는 도구: {name}")]
+    except Exception as e:
+        return [TextContent(type="text", text=f"❌ 오류: {str(e)}")]
 
+
+# ============================================
+# 도구 구현
+# ============================================
 
 async def _ask_gpt(args: dict) -> list[TextContent]:
     """GPT에게 질문"""
@@ -290,36 +529,44 @@ async def _ask_gpt(args: dict) -> list[TextContent]:
     model = args.get("model", "gpt-4o")
     use_api = args.get("use_api", False)
 
-    try:
-        # API 사용 강제 또는 CLI 없고 API 키 있는 경우
-        if use_api or (not has_codex_cli() and has_openai_api_key()):
-            result = await run_openai_api(prompt, model)
-            method = f"OpenAI API ({model})"
-        # CLI 우선
-        elif has_codex_cli():
-            cli_model = "o4-mini" if model in ["gpt-4o", "gpt-4o-mini"] else model
-            result = await run_codex(prompt, cli_model)
-            method = f"Codex CLI ({cli_model})"
-        # API 키 fallback
-        elif has_openai_api_key():
-            result = await run_openai_api(prompt, model)
-            method = f"OpenAI API ({model})"
-        else:
-            return [TextContent(
-                type="text",
-                text="❌ GPT 사용 불가\n\n"
-                     "다음 중 하나를 설정하세요:\n"
-                     "1. Codex CLI 로그인: 터미널에서 'codex' 실행\n"
-                     "2. API 키 설정: .env에 OPENAI_API_KEY 추가"
-            )]
+    result, method = await run_gpt(prompt, model, use_api=use_api)
 
-        return [TextContent(
-            type="text",
-            text=f"## GPT 응답\n**방식**: {method}\n\n---\n\n{result}"
-        )]
+    return [TextContent(
+        type="text",
+        text=f"## GPT 응답\n**방식**: {method}\n\n---\n\n{result}"
+    )]
 
-    except Exception as e:
-        return [TextContent(type="text", text=f"❌ GPT 오류: {str(e)}")]
+
+async def _oracle(args: dict) -> list[TextContent]:
+    """Oracle - 고급 추론 에이전트"""
+    problem = args["problem"]
+    context = args.get("context", "")
+    model = args.get("model", "gpt-5.2")
+
+    system_prompt = """You are Oracle, an expert reasoning agent specialized in:
+- Complex system architecture design
+- Algorithm optimization and analysis
+- Technical decision making
+- Root cause analysis for bugs
+- Refactoring strategy planning
+
+Approach every problem with step-by-step reasoning. Consider multiple perspectives,
+trade-offs, and edge cases. Provide actionable recommendations with clear justifications."""
+
+    full_prompt = f"""## Problem
+{problem}
+
+## Context
+{context if context else "No additional context provided."}
+
+Please analyze this problem step by step and provide your recommendations."""
+
+    result, method = await run_gpt(full_prompt, model, system_prompt)
+
+    return [TextContent(
+        type="text",
+        text=f"## 🔮 Oracle 분석 결과\n**모델**: {method}\n\n---\n\n{result}"
+    )]
 
 
 async def _ask_gemini(args: dict) -> list[TextContent]:
@@ -328,46 +575,136 @@ async def _ask_gemini(args: dict) -> list[TextContent]:
     model = args.get("model", "gemini-1.5-flash")
     use_api = args.get("use_api", False)
 
-    try:
-        # API 사용 강제 또는 CLI 없고 API 키 있는 경우
-        if use_api or (not has_gemini_cli() and has_gemini_api_key()):
-            result = await run_gemini_api(prompt, model)
-            method = f"Gemini API ({model})"
-        # CLI 우선
-        elif has_gemini_cli():
-            result = await run_gemini(prompt)
-            method = "Gemini CLI (gemini-2.5-pro)"
-        # API 키 fallback
-        elif has_gemini_api_key():
-            result = await run_gemini_api(prompt, model)
-            method = f"Gemini API ({model})"
-        else:
-            return [TextContent(
-                type="text",
-                text="❌ Gemini 사용 불가\n\n"
-                     "다음 중 하나를 설정하세요:\n"
-                     "1. Gemini CLI 로그인: 터미널에서 'gemini' 실행\n"
-                     "2. API 키 설정: .env에 GEMINI_API_KEY 추가"
-            )]
+    result, method = await run_gemini_agent(prompt, model, use_api=use_api)
 
+    return [TextContent(
+        type="text",
+        text=f"## Gemini 응답\n**방식**: {method}\n\n---\n\n{result}"
+    )]
+
+
+async def _frontend_designer(args: dict) -> list[TextContent]:
+    """Frontend Designer - UI/UX 코드 작성 에이전트"""
+    request = args["request"]
+    framework = args.get("framework", "react")
+    styling = args.get("styling", "tailwind")
+    existing_code = args.get("existing_code", "")
+
+    prompt = f"""You are a Frontend Designer agent specialized in creating beautiful,
+accessible, and responsive UI/UX code.
+
+## Request
+{request}
+
+## Technical Stack
+- Framework: {framework}
+- Styling: {styling}
+
+{f"## Existing Code to Modify/Improve{chr(10)}{existing_code}" if existing_code else ""}
+
+Please generate clean, well-structured code following best practices for the specified stack.
+Include:
+1. Complete, working code
+2. Brief explanation of key design decisions
+3. Accessibility considerations (if applicable)
+4. Responsive design notes (if applicable)"""
+
+    result, method = await run_gemini_agent(prompt)
+
+    return [TextContent(
+        type="text",
+        text=f"## 🎨 Frontend Designer 결과\n**방식**: {method}\n**Framework**: {framework} + {styling}\n\n---\n\n{result}"
+    )]
+
+
+async def _document_writer(args: dict) -> list[TextContent]:
+    """Document Writer - 문서 작성 에이전트"""
+    request = args["request"]
+    code_or_context = args.get("code_or_context", "")
+    doc_type = args.get("doc_type", "readme")
+    language = args.get("language", "korean")
+
+    doc_type_map = {
+        "readme": "README.md",
+        "api": "API Documentation",
+        "comment": "Code Comments",
+        "spec": "Technical Specification",
+        "changelog": "CHANGELOG",
+        "guide": "User Guide"
+    }
+
+    lang_instruction = "Write in Korean (한국어로 작성)" if language == "korean" else "Write in English"
+
+    prompt = f"""You are a Document Writer agent specialized in creating clear,
+comprehensive technical documentation.
+
+## Document Type
+{doc_type_map.get(doc_type, doc_type)}
+
+## Request
+{request}
+
+## Code/Context
+{code_or_context if code_or_context else "No code provided."}
+
+## Language
+{lang_instruction}
+
+Please write professional documentation that is:
+1. Clear and well-organized
+2. Complete with all necessary sections
+3. Easy to understand for the target audience
+4. Following standard documentation conventions"""
+
+    result, method = await run_gemini_agent(prompt)
+
+    return [TextContent(
+        type="text",
+        text=f"## 📝 Document Writer 결과\n**방식**: {method}\n**문서 유형**: {doc_type_map.get(doc_type, doc_type)}\n\n---\n\n{result}"
+    )]
+
+
+async def _multimodal_look(args: dict) -> list[TextContent]:
+    """Multimodal Looker - 이미지 분석 에이전트"""
+    image_path = args["image_path"]
+    request = args["request"]
+    task_type = args.get("task_type", "analyze")
+
+    if not os.path.exists(image_path):
         return [TextContent(
             type="text",
-            text=f"## Gemini 응답\n**방식**: {method}\n\n---\n\n{result}"
+            text=f"❌ 이미지 파일을 찾을 수 없습니다: {image_path}"
         )]
 
-    except Exception as e:
-        return [TextContent(type="text", text=f"❌ Gemini 오류: {str(e)}")]
+    task_instructions = {
+        "generate_code": "Generate code to recreate this UI/design. Be precise with layouts, colors, and spacing.",
+        "find_bugs": "Analyze this screenshot for UI bugs, visual issues, or UX problems. List all issues found.",
+        "design_feedback": "Provide detailed design feedback including improvements for aesthetics, usability, and accessibility.",
+        "analyze": "Analyze and describe what you see in this image in detail.",
+        "extract_text": "Extract and transcribe all text visible in this image."
+    }
+
+    prompt = f"""{task_instructions.get(task_type, task_instructions["analyze"])}
+
+## User Request
+{request}"""
+
+    result, method = await run_gemini_agent(prompt, image_path=image_path)
+
+    return [TextContent(
+        type="text",
+        text=f"## 👁️ Multimodal Looker 결과\n**방식**: {method}\n**작업**: {task_type}\n\n---\n\n{result}"
+    )]
 
 
 async def _compare_models(args: dict) -> list[TextContent]:
     """두 모델 비교"""
     prompt = args["prompt"]
 
-    # 병렬로 두 모델에 질문
-    gpt_task = _ask_gpt({"prompt": prompt})
-    gemini_task = _ask_gemini({"prompt": prompt})
+    gpt_task = run_gpt(prompt, "gpt-5.2")
+    gemini_task = run_gemini_agent(prompt, "gemini-3")
 
-    gpt_result, gemini_result = await asyncio.gather(gpt_task, gemini_task)
+    (gpt_result, gpt_method), (gemini_result, gemini_method) = await asyncio.gather(gpt_task, gemini_task)
 
     combined = f"""# 모델 비교 결과
 
@@ -376,11 +713,17 @@ async def _compare_models(args: dict) -> list[TextContent]:
 
 ---
 
-{gpt_result[0].text}
+## GPT 응답
+**방식**: {gpt_method}
+
+{gpt_result}
 
 ---
 
-{gemini_result[0].text}
+## Gemini 응답
+**방식**: {gemini_method}
+
+{gemini_result}
 """
 
     return [TextContent(type="text", text=combined)]
@@ -391,7 +734,7 @@ async def _check_status() -> list[TextContent]:
     status_lines = ["# 인증 상태\n"]
 
     # GPT 상태
-    status_lines.append("## GPT (OpenAI)")
+    status_lines.append("## GPT (OpenAI) - Oracle, ask_gpt")
     if has_codex_cli():
         status_lines.append("✅ Codex CLI 설치됨")
         status_lines.append("   → 'codex' 명령어로 ChatGPT 계정 로그인 가능")
@@ -407,7 +750,7 @@ async def _check_status() -> list[TextContent]:
     status_lines.append("")
 
     # Gemini 상태
-    status_lines.append("## Gemini (Google)")
+    status_lines.append("## Gemini (Google) - Frontend Designer, Document Writer, Multimodal Looker")
     if has_gemini_cli():
         status_lines.append("✅ Gemini CLI 설치됨")
         status_lines.append("   → 'gemini' 명령어로 Google 계정 로그인 가능")
@@ -416,9 +759,9 @@ async def _check_status() -> list[TextContent]:
         status_lines.append("   → 'npm install -g @google/gemini-cli'로 설치")
 
     if has_gemini_api_key():
-        status_lines.append("✅ GEMINI_API_KEY 설정됨")
+        status_lines.append("✅ GEMINI_API_KEY 설정됨 (Multimodal 기능 사용 가능)")
     else:
-        status_lines.append("⚪ GEMINI_API_KEY 미설정 (선택사항)")
+        status_lines.append("⚠️ GEMINI_API_KEY 미설정 (Multimodal 기능 제한)")
 
     return [TextContent(type="text", text="\n".join(status_lines))]
 
@@ -441,6 +784,7 @@ async def _login_guide() -> list[TextContent]:
 4. 로그인 완료 후 터미널로 돌아가면 자동으로 인증됨
 
 **지원 플랜**: ChatGPT Plus, Pro, Team, Edu, Enterprise
+**사용 가능한 에이전트**: Oracle, ask_gpt
 
 ---
 
@@ -458,13 +802,25 @@ async def _login_guide() -> list[TextContent]:
 4. 로그인 완료 후 터미널로 돌아가면 자동으로 인증됨
 
 **무료 사용량**: 60 요청/분, 1,000 요청/일
+**사용 가능한 에이전트**: Frontend Designer, Document Writer, ask_gemini
+
+---
+
+## Multimodal Looker (이미지 분석)
+
+이미지 분석 기능은 **Gemini API 키**가 필요합니다:
+
+1. https://aistudio.google.com/app/apikey 에서 API 키 발급
+2. `.env` 파일에 추가:
+   ```
+   GEMINI_API_KEY=your-api-key-here
+   ```
 
 ---
 
 ## 참고
 
 - 한번 로그인하면 토큰이 저장되어 이후에는 자동으로 인증됩니다
-- API 키 없이 사용 가능합니다
 - CLI 로그인과 API 키를 동시에 설정해도 됩니다 (CLI 우선)
 """
     return [TextContent(type="text", text=guide)]
