@@ -806,24 +806,17 @@ history/ 폴더에 저장된 HISTORY_*.md 파일들을 조회합니다.""",
         # ========== Multi-LLM Init ==========
         Tool(
             name="multi_init",
-            description="""Multi-LLM Init - Claude + GPT + Gemini 3개 LLM이 병렬로 프로젝트 초기화
+            description="""Multi-LLM Init - GPT + Gemini가 프로젝트 분석 (Claude context 절약)
 
-3개의 LLM이 각자의 관점에서 프로젝트를 분석합니다:
-1. Claude: 코드베이스 탐색 및 구조 분석 (project_info로 전달)
-2. GPT: 아키텍처 및 기술적 깊이 분석
-3. Gemini: 실용적 관점 및 코드 스타일 분석
+**효율적 사용**:
+- compact=true: 최소 응답 (기본값, ~200자)
+- compact=false: 전체 분석 (토큰 소비 큼)
+- 기존 CLAUDE.md 있으면 자동 감지 → 업데이트 필요 여부만 반환
 
 사용 방법:
-1. Claude가 먼저 프로젝트를 탐색 (Glob, Read 등으로 파일 구조, 주요 파일 확인)
-2. 탐색 결과를 project_info로 전달하여 multi_init 호출
-3. GPT와 Gemini가 병렬로 추가 분석
-4. 3개 LLM의 관점이 통합된 결과 반환
-
-기능:
-- Claude 분석: 코드베이스 탐색 결과
-- GPT 분석: 아키텍처, 기술 부채, 개선점
-- Gemini 분석: 코드 스타일, 네비게이션 가이드
-- CLAUDE.md 제안: 3개 분석 결과 기반""",
+- Claude는 project_path만 전달
+- MCP 서버가 탐색+분석 수행
+- 요약된 결과만 반환""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -831,17 +824,57 @@ history/ 폴더에 저장된 HISTORY_*.md 파일들을 조회합니다.""",
                         "type": "string",
                         "description": "프로젝트 루트 경로 (절대 경로)"
                     },
-                    "project_info": {
-                        "type": "string",
-                        "description": "Claude가 탐색한 프로젝트 정보 (파일 구조, 주요 파일 내용, 기술 스택 등) - 이것이 Claude의 분석 결과"
-                    },
-                    "generate_claude_md": {
+                    "compact": {
                         "type": "boolean",
-                        "description": "CLAUDE.md 생성 제안 포함 여부 (기본값: true)",
+                        "description": "true면 최소 응답 (기본값), false면 전체 분석",
                         "default": True
                     }
                 },
-                "required": ["project_path", "project_info"]
+                "required": ["project_path"]
+            }
+        ),
+
+        # ========== Explore Code (Gemini) ==========
+        Tool(
+            name="explore_code",
+            description="""Explore Code - Gemini가 코드베이스 탐색 (Claude context 절약)
+
+Claude 대신 Gemini가 코드베이스를 탐색하고 요약된 결과를 반환합니다.
+Claude는 Glob/Read/Grep 대신 이 도구를 사용하여 context를 절약합니다.
+
+사용 예시:
+- "이 프로젝트의 인증 로직은 어디에 있어?"
+- "API 엔드포인트 목록 찾아줘"
+- "에러 핸들링이 어떻게 구현되어 있어?"
+- "데이터베이스 스키마 찾아줘"
+- "테스트 파일들 분석해줘"
+
+작동 방식:
+1. MCP 서버가 프로젝트 파일 구조 수집
+2. 질문과 관련된 파일들 읽기
+3. Gemini가 분석하여 요약 반환
+4. Claude는 요약만 받음 (context 절약!)""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "프로젝트 루트 경로 (절대 경로)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "코드베이스에 대한 질문 (예: '인증 로직 위치', 'API 엔드포인트 목록')"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "탐색할 파일 패턴 (예: '*.py', 'src/**/*.ts') - 선택사항"
+                    },
+                    "search_keyword": {
+                        "type": "string",
+                        "description": "파일 내용에서 찾을 키워드 (예: 'authenticate', 'router') - 선택사항"
+                    }
+                },
+                "required": ["project_path", "query"]
             }
         )
     ]
@@ -882,6 +915,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await _save_workflow(arguments)
         elif name == "multi_init":
             return await _multi_init(arguments)
+        elif name == "explore_code":
+            return await _explore_code(arguments)
         else:
             return [TextContent(type="text", text=f"알 수 없는 도구: {name}")]
     except Exception as e:
@@ -1315,141 +1350,355 @@ async def _save_workflow(args: dict) -> list[TextContent]:
     )]
 
 
+async def _explore_project(project_path: str) -> str:
+    """프로젝트 탐색 - 파일 구조와 주요 파일 내용 수집
+
+    MCP 서버 내부에서 실행되어 Claude의 context를 절약합니다.
+    """
+    explore_result = []
+
+    # 1. 파일 구조 확인 (tree 또는 find)
+    try:
+        # tree 명령어 시도
+        process = await asyncio.create_subprocess_exec(
+            "tree", "-L", "3", "-I", "node_modules|.git|__pycache__|venv|.venv|dist|build",
+            project_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await process.communicate()
+        if process.returncode == 0:
+            tree_output = stdout.decode().strip()
+            # 너무 길면 자르기
+            if len(tree_output) > 3000:
+                tree_output = tree_output[:3000] + "\n... (truncated)"
+            explore_result.append(f"## File Structure\n```\n{tree_output}\n```")
+        else:
+            raise Exception("tree failed")
+    except:
+        # tree 실패 시 ls 사용
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "ls", "-la", project_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+            ls_output = stdout.decode().strip()
+            explore_result.append(f"## File Structure\n```\n{ls_output}\n```")
+        except:
+            explore_result.append("## File Structure\nCould not list files")
+
+    # 2. 주요 설정 파일 읽기
+    config_files = [
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "Cargo.toml",
+        "go.mod",
+        "pubspec.yaml",
+        "build.gradle",
+        "pom.xml",
+        "Makefile",
+        "docker-compose.yml",
+        "Dockerfile"
+    ]
+
+    found_configs = []
+    for config in config_files:
+        config_path = os.path.join(project_path, config)
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # 너무 길면 자르기
+                    if len(content) > 2000:
+                        content = content[:2000] + "\n... (truncated)"
+                    found_configs.append(f"### {config}\n```\n{content}\n```")
+            except:
+                found_configs.append(f"### {config}\n(Could not read)")
+
+    if found_configs:
+        explore_result.append("## Configuration Files\n" + "\n".join(found_configs))
+
+    # 3. README 읽기
+    readme_files = ["README.md", "readme.md", "README", "README.txt"]
+    for readme in readme_files:
+        readme_path = os.path.join(project_path, readme)
+        if os.path.exists(readme_path):
+            try:
+                with open(readme_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if len(content) > 2000:
+                        content = content[:2000] + "\n... (truncated)"
+                    explore_result.append(f"## README\n{content}")
+                break
+            except:
+                pass
+
+    # 4. 소스 디렉토리 확인
+    src_dirs = ["src", "lib", "app", "pkg", "cmd", "internal", "components"]
+    found_src = []
+    for src_dir in src_dirs:
+        src_path = os.path.join(project_path, src_dir)
+        if os.path.isdir(src_path):
+            try:
+                files = os.listdir(src_path)[:20]  # 최대 20개
+                found_src.append(f"- {src_dir}/: {', '.join(files[:10])}" +
+                               (" ..." if len(files) > 10 else ""))
+            except:
+                pass
+
+    if found_src:
+        explore_result.append("## Source Directories\n" + "\n".join(found_src))
+
+    return "\n\n".join(explore_result)
+
+
 async def _multi_init(args: dict) -> list[TextContent]:
-    """Multi-LLM Init - Claude + GPT + Gemini 3개 LLM 병렬 분석"""
+    """Multi-LLM Init - GPT + Gemini가 탐색 + 분석 (Claude context 절약)
+
+    Claude는 project_path만 전달하면 됩니다.
+    MCP 서버에서 탐색과 분석을 모두 처리하고 요약된 결과만 반환합니다.
+
+    compact=True (기본값): 최소 응답으로 Claude context 절약
+    compact=False: 전체 분석 (토큰 소비 큼)
+    """
     project_path = args["project_path"]
-    project_info = args["project_info"]  # Claude의 분석 결과
-    generate_claude_md = args.get("generate_claude_md", True)
+    compact = args.get("compact", True)  # 기본값: 최소 응답
+
+    if not os.path.exists(project_path):
+        return [TextContent(
+            type="text",
+            text=f"❌ 경로 없음: {project_path}"
+        )]
 
     # 프로젝트 루트 설정
     set_project_root(project_path)
 
-    # GPT 분석 프롬프트 (아키텍처, 기술적 깊이)
-    gpt_system = """You are a senior software architect analyzing a codebase.
-Focus on:
-1. Architecture patterns and design decisions
-2. Technical debt and improvement opportunities
-3. Code organization and modularity
-4. Critical files and entry points
-5. Dependencies and technology stack analysis
+    # CLAUDE.md 존재 확인
+    claude_md_path = os.path.join(project_path, "CLAUDE.md")
+    claude_md_exists = os.path.exists(claude_md_path)
 
-Be concise but thorough. Provide actionable insights."""
+    # === compact=True + CLAUDE.md 존재 시 초단축 응답 ===
+    if compact and claude_md_exists:
+        return [TextContent(
+            type="text",
+            text=f"✅ **{os.path.basename(project_path)}** init 완료\n📄 CLAUDE.md 이미 존재\n💡 전체 분석 필요 시: `compact=false`"
+        )]
 
-    gpt_prompt = f"""Analyze this project for architecture and technical depth:
+    # === compact=True: 빠른 분석 (Gemini만 사용) ===
+    if compact:
+        project_info = await _explore_project(project_path)
 
-## Project Path
-{project_path}
-
-## Project Information (from Claude's exploration)
+        quick_prompt = f"""프로젝트 초기화 요약 (매우 간결하게):
 {project_info}
 
-Provide:
-1. Architecture Overview (patterns, structure)
-2. Key Technical Insights
-3. Entry Points & Critical Files
-4. Improvement Opportunities
-5. Technology Stack Summary"""
+3줄 응답:
+1. 기술스택 (콤마 구분)
+2. 실행 명령어 (예: npm start, python main.py)
+3. 핵심 파일 (최대 3개)"""
 
-    # Gemini 분석 프롬프트 (코드 스타일, 실용적 관점)
-    gemini_prompt = f"""You are a practical code reviewer analyzing a codebase.
-Focus on:
-1. Code style and conventions used
-2. How to quickly navigate and understand the codebase
-3. Common patterns and idioms in the code
-4. Best practices followed or missing
-5. Quick start guide for new developers
+        result, method = await run_gemini_agent(quick_prompt)
 
-## Project Path
-{project_path}
+        return [TextContent(
+            type="text",
+            text=f"✅ **{os.path.basename(project_path)}** init ({method})\n{result}\n\n💡 상세 분석: `compact=false`"
+        )]
 
-## Project Information (from Claude's exploration)
+    # === compact=False: 전체 분석 (GPT + Gemini) ===
+    project_info = await _explore_project(project_path)
+
+    # GPT 분석 프롬프트 (아키텍처, 기술적 깊이) - 짧게
+    gpt_prompt = f"""Analyze this project briefly. Project: {project_path}
+
 {project_info}
 
-Provide:
-1. Code Style & Conventions
-2. Navigation Guide (where to find what)
-3. Common Patterns in Use
-4. Best Practices Assessment
-5. Quick Start for Developers"""
+Provide CONCISE analysis (max 300 words):
+1. Tech Stack
+2. Architecture Pattern
+3. Key Entry Points"""
+
+    # Gemini 분석 프롬프트 (실용적 관점) - 짧게
+    gemini_prompt = f"""Analyze this project for practical guidance. Project: {project_path}
+
+{project_info}
+
+Provide CONCISE analysis (max 300 words):
+1. How to run/build
+2. Key directories
+3. Quick start"""
 
     # GPT + Gemini 병렬 실행
-    gpt_task = run_gpt(gpt_prompt, system_prompt=gpt_system)
+    gpt_task = run_gpt(gpt_prompt)
     gemini_task = run_gemini_agent(gemini_prompt)
 
     (gpt_result, gpt_method), (gemini_result, gemini_method) = await asyncio.gather(
         gpt_task, gemini_task
     )
 
-    # CLAUDE.md 제안 (3개 LLM 분석 기반)
-    claude_md_section = ""
-    if generate_claude_md:
-        claude_md_prompt = f"""Based on 3 different LLM analyses, create a comprehensive CLAUDE.md file.
+    # CLAUDE.md 생성 (Gemini가 두 분석 종합)
+    claude_md_prompt = f"""Create a CLAUDE.md for this project. Be VERY concise (max 200 words).
 
-## Claude's Analysis (Codebase Exploration)
-{project_info}
+GPT: {gpt_result}
+Gemini: {gemini_result}
 
-## GPT's Analysis (Architecture)
+Include ONLY:
+1. One-line description
+2. Key commands
+3. Top 3 files"""
+
+    claude_md_result, _ = await run_gemini_agent(claude_md_prompt)
+
+    # 최종 결과
+    combined_result = f"""# {os.path.basename(project_path)} Init
+
+## GPT ({gpt_method})
 {gpt_result}
 
-## Gemini's Analysis (Practical)
+## Gemini ({gemini_method})
 {gemini_result}
 
-Create a CLAUDE.md that synthesizes all 3 perspectives:
-1. Project overview (1-2 sentences)
-2. Key commands (build, test, run)
-3. Important directories and files
-4. Coding conventions to follow
-5. Common tasks and how to do them
-6. Architecture notes (from GPT)
-7. Quick start guide (from Gemini)
-
-Keep it concise and actionable. Format as proper Markdown."""
-
-        claude_md_result, _ = await run_gemini_agent(claude_md_prompt)
-        claude_md_section = f"""
----
-
-## CLAUDE.md 제안 (3 LLM 종합)
-
-다음 내용을 `{project_path}/CLAUDE.md`에 저장하세요:
-
+## CLAUDE.md
+```markdown
 {claude_md_result}
-"""
-
-    # 결과 조합 - 3개 LLM 분석 모두 포함
-    combined_result = f"""# Multi-LLM Project Init (Claude + GPT + Gemini)
-
-## Project: {project_path}
-
----
-
-## 1. Claude 분석 (코드베이스 탐색)
-**역할**: 파일 구조 탐색, 주요 파일 확인, 기술 스택 파악
-
-{project_info}
-
----
-
-## 2. GPT 분석 (아키텍처 관점)
-**모델**: {gpt_method}
-**역할**: 아키텍처 패턴, 기술 부채, 개선점 분석
-
-{gpt_result}
-
----
-
-## 3. Gemini 분석 (실용적 관점)
-**모델**: {gemini_method}
-**역할**: 코드 스타일, 네비게이션 가이드, 베스트 프랙티스
-
-{gemini_result}
-{claude_md_section}
----
-
-**3개 LLM 분석 완료** | 프로젝트 루트: `{project_path}` | 히스토리: `{project_path}/history/`
-"""
+```
+저장: `{claude_md_path}`"""
 
     return [TextContent(type="text", text=combined_result)]
+
+
+async def _explore_code(args: dict) -> list[TextContent]:
+    """Explore Code - Gemini가 코드베이스 탐색 (Claude context 절약)
+
+    Claude 대신 Gemini가 파일을 읽고 분석하여 요약된 결과를 반환합니다.
+    """
+    project_path = args["project_path"]
+    query = args["query"]
+    file_pattern = args.get("file_pattern", "")
+    search_keyword = args.get("search_keyword", "")
+
+    if not os.path.exists(project_path):
+        return [TextContent(
+            type="text",
+            text=f"프로젝트 경로가 존재하지 않습니다: {project_path}"
+        )]
+
+    # 1. 파일 구조 수집
+    file_structure = await _explore_project(project_path)
+
+    # 2. 키워드 검색 (옵션)
+    search_results = ""
+    if search_keyword:
+        try:
+            # grep으로 키워드 검색
+            process = await asyncio.create_subprocess_exec(
+                "grep", "-r", "-l", "-I",
+                "--include=*.py", "--include=*.js", "--include=*.ts",
+                "--include=*.tsx", "--include=*.jsx", "--include=*.go",
+                "--include=*.java", "--include=*.swift", "--include=*.kt",
+                "--include=*.dart", "--include=*.rs", "--include=*.rb",
+                "--include=*.php", "--include=*.vue", "--include=*.svelte",
+                search_keyword, project_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+            if stdout:
+                files = stdout.decode().strip().split('\n')[:10]  # 최대 10개 파일
+                search_results = f"\n## Files containing '{search_keyword}':\n"
+                for f in files:
+                    rel_path = os.path.relpath(f, project_path)
+                    search_results += f"- {rel_path}\n"
+
+                    # 각 파일에서 관련 부분 읽기
+                    try:
+                        with open(f, 'r', encoding='utf-8') as file:
+                            content = file.read()
+                            # 키워드 주변 컨텍스트 추출
+                            lines = content.split('\n')
+                            relevant_lines = []
+                            for i, line in enumerate(lines):
+                                if search_keyword.lower() in line.lower():
+                                    start = max(0, i - 2)
+                                    end = min(len(lines), i + 3)
+                                    context = '\n'.join(lines[start:end])
+                                    relevant_lines.append(f"```\n{context}\n```")
+                                    if len(relevant_lines) >= 3:  # 파일당 최대 3개 컨텍스트
+                                        break
+                            if relevant_lines:
+                                search_results += '\n'.join(relevant_lines[:2]) + '\n'
+                    except:
+                        pass
+        except:
+            pass
+
+    # 3. 파일 패턴으로 파일 찾기 (옵션)
+    pattern_results = ""
+    if file_pattern:
+        try:
+            import fnmatch
+            matched_files = []
+            for root, dirs, files in os.walk(project_path):
+                # 제외할 디렉토리
+                dirs[:] = [d for d in dirs if d not in [
+                    'node_modules', '.git', '__pycache__', 'venv', '.venv',
+                    'dist', 'build', '.next', '.nuxt'
+                ]]
+                for filename in files:
+                    if fnmatch.fnmatch(filename, file_pattern):
+                        rel_path = os.path.relpath(os.path.join(root, filename), project_path)
+                        matched_files.append(rel_path)
+                        if len(matched_files) >= 20:
+                            break
+                if len(matched_files) >= 20:
+                    break
+
+            if matched_files:
+                pattern_results = f"\n## Files matching '{file_pattern}':\n"
+                for f in matched_files[:15]:
+                    pattern_results += f"- {f}\n"
+
+                # 첫 3개 파일 내용 읽기
+                for f in matched_files[:3]:
+                    full_path = os.path.join(project_path, f)
+                    try:
+                        with open(full_path, 'r', encoding='utf-8') as file:
+                            content = file.read()
+                            if len(content) > 1500:
+                                content = content[:1500] + "\n... (truncated)"
+                            pattern_results += f"\n### {f}\n```\n{content}\n```\n"
+                    except:
+                        pass
+        except Exception as e:
+            pattern_results = f"\n패턴 검색 오류: {str(e)}"
+
+    # 4. Gemini에게 분석 요청
+    gemini_prompt = f"""You are a code explorer. Answer the following question about this codebase.
+
+## Question
+{query}
+
+## Project Structure
+{file_structure}
+{search_results}
+{pattern_results}
+
+## Instructions
+- Answer the question directly and concisely
+- Include specific file paths and line numbers when relevant
+- If you find the answer, explain it clearly
+- If you can't find the answer, say what you did find
+- Keep response under 500 words
+
+Answer in Korean if the question is in Korean."""
+
+    result, method = await run_gemini_agent(gemini_prompt)
+
+    return [TextContent(
+        type="text",
+        text=f"## 코드 탐색 결과\n**Query**: {query}\n**방식**: {method}\n\n---\n\n{result}"
+    )]
 
 
 def main():

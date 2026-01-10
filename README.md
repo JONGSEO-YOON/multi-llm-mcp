@@ -16,6 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/jongseo-yoon/multi-llm-mcp/main/ins
 - **CLI 우선** - Codex CLI, Gemini CLI를 통한 인증
 - **API 키 fallback** - CLI 로그인이 안 되면 API 키 사용 가능
 - **다른 서버에 쉽게 적용** - Git clone 후 설치 스크립트 실행만으로 설정 완료
+- **Claude Context 절약** - /init 시 MCP 서버가 탐색+분석하여 Claude는 결과만 받음
 
 ## 제공 도구
 
@@ -24,7 +25,8 @@ curl -fsSL https://raw.githubusercontent.com/jongseo-yoon/multi-llm-mcp/main/ins
 |------|------|
 | `oracle` | 고급 추론 에이전트 (GPT-5.2) - 아키텍처 설계, 알고리즘 최적화 |
 | `review_implementation` | 구현 검토 에이전트 (GPT-5.2) - 요구사항 충족 여부 검증 |
-| `multi_init` | 프로젝트 초기화 (Claude + GPT + Gemini) - 3개 LLM이 각자의 관점에서 분석 |
+| `multi_init` | 프로젝트 초기화 - compact=true(기본)시 ~100토큰, false시 GPT+Gemini 전체분석 |
+| `explore_code` | 코드베이스 탐색 (Gemini) - Glob/Read/Grep 대신 사용, Claude context 절약 |
 | `frontend_designer` | UI/UX 코드 작성 (Gemini 3) - React, Vue, Tailwind 등 |
 | `document_writer` | 문서 작성 (Gemini 3) - README, API 문서, 주석 |
 | `multimodal_look` | 이미지 분석 (Gemini 3) - 스크린샷에서 코드 생성, 버그 발견 |
