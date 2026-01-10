@@ -10,6 +10,7 @@ This is your DEFAULT behavior. No special keywords needed.
 ### 1. AUTOMATIC AGENT DISPATCH:
 | Trigger | Action |
 |---------|--------|
+| **/init or Project initialization** | → `mcp__multi-llm__multi_init` (GPT+Gemini) |
 | Architecture/Algorithm/Design | → `mcp__multi-llm__oracle` |
 | **ANY Frontend/UI code** (Web, Mobile, Styling) | → `mcp__multi-llm__frontend_designer` |
 | Documentation/README/Comments | → `mcp__multi-llm__document_writer` |
@@ -56,6 +57,7 @@ review_implementation ← MANDATORY
 
 ## TRIGGER KEYWORDS:
 
+- "/init", "프로젝트 초기화", "프로젝트 분석" → `multi_init` (GPT+Gemini 병렬 분석)
 - "설계", "아키텍처", "구조", "알고리즘" → `oracle`
 - **Frontend/UI (ANY)** → `frontend_designer`:
   - Web: React, Vue, Svelte, Angular, Next.js, Nuxt.js

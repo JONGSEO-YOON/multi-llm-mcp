@@ -24,6 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/jongseo-yoon/multi-llm-mcp/main/ins
 |------|------|
 | `oracle` | 고급 추론 에이전트 (GPT-5.2) - 아키텍처 설계, 알고리즘 최적화 |
 | `review_implementation` | 구현 검토 에이전트 (GPT-5.2) - 요구사항 충족 여부 검증 |
+| `multi_init` | 프로젝트 초기화 (GPT + Gemini) - 두 LLM이 병렬로 분석하여 종합적 이해 제공 |
 | `frontend_designer` | UI/UX 코드 작성 (Gemini 3) - React, Vue, Tailwind 등 |
 | `document_writer` | 문서 작성 (Gemini 3) - README, API 문서, 주석 |
 | `multimodal_look` | 이미지 분석 (Gemini 3) - 스크린샷에서 코드 생성, 버그 발견 |

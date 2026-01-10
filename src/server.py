@@ -801,6 +801,44 @@ history/ 폴더에 저장된 HISTORY_*.md 파일들을 조회합니다.""",
                 },
                 "required": ["user_request", "workflow_summary"]
             }
+        ),
+
+        # ========== Multi-LLM Init ==========
+        Tool(
+            name="multi_init",
+            description="""Multi-LLM Init - GPT와 Gemini를 함께 사용하여 프로젝트 초기화
+
+두 LLM이 병렬로 프로젝트를 분석하고, 그 결과를 합쳐서 종합적인 프로젝트 이해를 제공합니다.
+
+기능:
+1. 프로젝트 구조 분석 (GPT + Gemini)
+2. 기술 스택 파악
+3. 코드베이스 이해
+4. CLAUDE.md 생성/업데이트 제안
+
+사용 시점:
+- 새 프로젝트 시작 시 /init 대신 사용
+- 프로젝트 이해가 필요할 때
+- CLAUDE.md를 자동 생성하고 싶을 때""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "프로젝트 루트 경로 (절대 경로)"
+                    },
+                    "project_info": {
+                        "type": "string",
+                        "description": "프로젝트 구조, 파일 목록, 주요 파일 내용 등"
+                    },
+                    "generate_claude_md": {
+                        "type": "boolean",
+                        "description": "CLAUDE.md 생성 제안 포함 여부 (기본값: true)",
+                        "default": True
+                    }
+                },
+                "required": ["project_path", "project_info"]
+            }
         )
     ]
 
@@ -838,6 +876,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await _compact_history()
         elif name == "save_workflow":
             return await _save_workflow(arguments)
+        elif name == "multi_init":
+            return await _multi_init(arguments)
         else:
             return [TextContent(type="text", text=f"알 수 없는 도구: {name}")]
     except Exception as e:
@@ -1269,6 +1309,129 @@ async def _save_workflow(args: dict) -> list[TextContent]:
         type="text",
         text=f"워크플로우 저장 완료: {filepath}"
     )]
+
+
+async def _multi_init(args: dict) -> list[TextContent]:
+    """Multi-LLM Init - GPT와 Gemini를 함께 사용하여 프로젝트 초기화"""
+    project_path = args["project_path"]
+    project_info = args["project_info"]
+    generate_claude_md = args.get("generate_claude_md", True)
+
+    # 프로젝트 루트 설정
+    set_project_root(project_path)
+
+    # GPT 분석 프롬프트 (아키텍처, 기술적 깊이)
+    gpt_system = """You are a senior software architect analyzing a codebase.
+Focus on:
+1. Architecture patterns and design decisions
+2. Technical debt and improvement opportunities
+3. Code organization and modularity
+4. Critical files and entry points
+5. Dependencies and technology stack analysis
+
+Be concise but thorough. Provide actionable insights."""
+
+    gpt_prompt = f"""Analyze this project for architecture and technical depth:
+
+## Project Path
+{project_path}
+
+## Project Information
+{project_info}
+
+Provide:
+1. Architecture Overview (patterns, structure)
+2. Key Technical Insights
+3. Entry Points & Critical Files
+4. Improvement Opportunities
+5. Technology Stack Summary"""
+
+    # Gemini 분석 프롬프트 (코드 스타일, 실용적 관점)
+    gemini_prompt = f"""You are a practical code reviewer analyzing a codebase.
+Focus on:
+1. Code style and conventions used
+2. How to quickly navigate and understand the codebase
+3. Common patterns and idioms in the code
+4. Best practices followed or missing
+5. Quick start guide for new developers
+
+## Project Path
+{project_path}
+
+## Project Information
+{project_info}
+
+Provide:
+1. Code Style & Conventions
+2. Navigation Guide (where to find what)
+3. Common Patterns in Use
+4. Best Practices Assessment
+5. Quick Start for Developers"""
+
+    # 두 LLM 병렬 실행
+    gpt_task = run_gpt(gpt_prompt, system_prompt=gpt_system)
+    gemini_task = run_gemini_agent(gemini_prompt)
+
+    (gpt_result, gpt_method), (gemini_result, gemini_method) = await asyncio.gather(
+        gpt_task, gemini_task
+    )
+
+    # CLAUDE.md 제안 (옵션)
+    claude_md_section = ""
+    if generate_claude_md:
+        claude_md_prompt = f"""Based on this project analysis, create a CLAUDE.md file that will help Claude Code work effectively with this project.
+
+## GPT Analysis (Architecture)
+{gpt_result}
+
+## Gemini Analysis (Practical)
+{gemini_result}
+
+Create a CLAUDE.md with:
+1. Project overview (1-2 sentences)
+2. Key commands (build, test, run)
+3. Important directories and files
+4. Coding conventions to follow
+5. Common tasks and how to do them
+
+Keep it concise and actionable. Format as proper Markdown."""
+
+        claude_md_result, _ = await run_gemini_agent(claude_md_prompt)
+        claude_md_section = f"""
+---
+
+## CLAUDE.md 제안
+
+다음 내용을 `{project_path}/CLAUDE.md`에 저장하면 Claude Code가 이 프로젝트를 더 잘 이해할 수 있습니다:
+
+{claude_md_result}
+"""
+
+    # 결과 조합
+    combined_result = f"""# Multi-LLM Project Init
+
+## Project: {project_path}
+
+---
+
+## GPT 분석 (아키텍처 관점)
+**모델**: {gpt_method}
+
+{gpt_result}
+
+---
+
+## Gemini 분석 (실용적 관점)
+**모델**: {gemini_method}
+
+{gemini_result}
+{claude_md_section}
+---
+
+**프로젝트 루트 설정 완료**: 히스토리가 `{project_path}/history/`에 저장됩니다.
+"""
+
+    return [TextContent(type="text", text=combined_result)]
 
 
 def main():
