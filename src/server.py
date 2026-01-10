@@ -806,20 +806,24 @@ history/ 폴더에 저장된 HISTORY_*.md 파일들을 조회합니다.""",
         # ========== Multi-LLM Init ==========
         Tool(
             name="multi_init",
-            description="""Multi-LLM Init - GPT와 Gemini를 함께 사용하여 프로젝트 초기화
+            description="""Multi-LLM Init - Claude + GPT + Gemini 3개 LLM이 병렬로 프로젝트 초기화
 
-두 LLM이 병렬로 프로젝트를 분석하고, 그 결과를 합쳐서 종합적인 프로젝트 이해를 제공합니다.
+3개의 LLM이 각자의 관점에서 프로젝트를 분석합니다:
+1. Claude: 코드베이스 탐색 및 구조 분석 (project_info로 전달)
+2. GPT: 아키텍처 및 기술적 깊이 분석
+3. Gemini: 실용적 관점 및 코드 스타일 분석
+
+사용 방법:
+1. Claude가 먼저 프로젝트를 탐색 (Glob, Read 등으로 파일 구조, 주요 파일 확인)
+2. 탐색 결과를 project_info로 전달하여 multi_init 호출
+3. GPT와 Gemini가 병렬로 추가 분석
+4. 3개 LLM의 관점이 통합된 결과 반환
 
 기능:
-1. 프로젝트 구조 분석 (GPT + Gemini)
-2. 기술 스택 파악
-3. 코드베이스 이해
-4. CLAUDE.md 생성/업데이트 제안
-
-사용 시점:
-- 새 프로젝트 시작 시 /init 대신 사용
-- 프로젝트 이해가 필요할 때
-- CLAUDE.md를 자동 생성하고 싶을 때""",
+- Claude 분석: 코드베이스 탐색 결과
+- GPT 분석: 아키텍처, 기술 부채, 개선점
+- Gemini 분석: 코드 스타일, 네비게이션 가이드
+- CLAUDE.md 제안: 3개 분석 결과 기반""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -829,7 +833,7 @@ history/ 폴더에 저장된 HISTORY_*.md 파일들을 조회합니다.""",
                     },
                     "project_info": {
                         "type": "string",
-                        "description": "프로젝트 구조, 파일 목록, 주요 파일 내용 등"
+                        "description": "Claude가 탐색한 프로젝트 정보 (파일 구조, 주요 파일 내용, 기술 스택 등) - 이것이 Claude의 분석 결과"
                     },
                     "generate_claude_md": {
                         "type": "boolean",
@@ -1312,9 +1316,9 @@ async def _save_workflow(args: dict) -> list[TextContent]:
 
 
 async def _multi_init(args: dict) -> list[TextContent]:
-    """Multi-LLM Init - GPT와 Gemini를 함께 사용하여 프로젝트 초기화"""
+    """Multi-LLM Init - Claude + GPT + Gemini 3개 LLM 병렬 분석"""
     project_path = args["project_path"]
-    project_info = args["project_info"]
+    project_info = args["project_info"]  # Claude의 분석 결과
     generate_claude_md = args.get("generate_claude_md", True)
 
     # 프로젝트 루트 설정
@@ -1336,7 +1340,7 @@ Be concise but thorough. Provide actionable insights."""
 ## Project Path
 {project_path}
 
-## Project Information
+## Project Information (from Claude's exploration)
 {project_info}
 
 Provide:
@@ -1358,7 +1362,7 @@ Focus on:
 ## Project Path
 {project_path}
 
-## Project Information
+## Project Information (from Claude's exploration)
 {project_info}
 
 Provide:
@@ -1368,7 +1372,7 @@ Provide:
 4. Best Practices Assessment
 5. Quick Start for Developers"""
 
-    # 두 LLM 병렬 실행
+    # GPT + Gemini 병렬 실행
     gpt_task = run_gpt(gpt_prompt, system_prompt=gpt_system)
     gemini_task = run_gemini_agent(gemini_prompt)
 
@@ -1376,23 +1380,28 @@ Provide:
         gpt_task, gemini_task
     )
 
-    # CLAUDE.md 제안 (옵션)
+    # CLAUDE.md 제안 (3개 LLM 분석 기반)
     claude_md_section = ""
     if generate_claude_md:
-        claude_md_prompt = f"""Based on this project analysis, create a CLAUDE.md file that will help Claude Code work effectively with this project.
+        claude_md_prompt = f"""Based on 3 different LLM analyses, create a comprehensive CLAUDE.md file.
 
-## GPT Analysis (Architecture)
+## Claude's Analysis (Codebase Exploration)
+{project_info}
+
+## GPT's Analysis (Architecture)
 {gpt_result}
 
-## Gemini Analysis (Practical)
+## Gemini's Analysis (Practical)
 {gemini_result}
 
-Create a CLAUDE.md with:
+Create a CLAUDE.md that synthesizes all 3 perspectives:
 1. Project overview (1-2 sentences)
 2. Key commands (build, test, run)
 3. Important directories and files
 4. Coding conventions to follow
 5. Common tasks and how to do them
+6. Architecture notes (from GPT)
+7. Quick start guide (from Gemini)
 
 Keep it concise and actionable. Format as proper Markdown."""
 
@@ -1400,35 +1409,44 @@ Keep it concise and actionable. Format as proper Markdown."""
         claude_md_section = f"""
 ---
 
-## CLAUDE.md 제안
+## CLAUDE.md 제안 (3 LLM 종합)
 
-다음 내용을 `{project_path}/CLAUDE.md`에 저장하면 Claude Code가 이 프로젝트를 더 잘 이해할 수 있습니다:
+다음 내용을 `{project_path}/CLAUDE.md`에 저장하세요:
 
 {claude_md_result}
 """
 
-    # 결과 조합
-    combined_result = f"""# Multi-LLM Project Init
+    # 결과 조합 - 3개 LLM 분석 모두 포함
+    combined_result = f"""# Multi-LLM Project Init (Claude + GPT + Gemini)
 
 ## Project: {project_path}
 
 ---
 
-## GPT 분석 (아키텍처 관점)
+## 1. Claude 분석 (코드베이스 탐색)
+**역할**: 파일 구조 탐색, 주요 파일 확인, 기술 스택 파악
+
+{project_info}
+
+---
+
+## 2. GPT 분석 (아키텍처 관점)
 **모델**: {gpt_method}
+**역할**: 아키텍처 패턴, 기술 부채, 개선점 분석
 
 {gpt_result}
 
 ---
 
-## Gemini 분석 (실용적 관점)
+## 3. Gemini 분석 (실용적 관점)
 **모델**: {gemini_method}
+**역할**: 코드 스타일, 네비게이션 가이드, 베스트 프랙티스
 
 {gemini_result}
 {claude_md_section}
 ---
 
-**프로젝트 루트 설정 완료**: 히스토리가 `{project_path}/history/`에 저장됩니다.
+**3개 LLM 분석 완료** | 프로젝트 루트: `{project_path}` | 히스토리: `{project_path}/history/`
 """
 
     return [TextContent(type="text", text=combined_result)]

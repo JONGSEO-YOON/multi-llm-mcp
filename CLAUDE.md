@@ -10,12 +10,23 @@ This is your DEFAULT behavior. No special keywords needed.
 ### 1. AUTOMATIC AGENT DISPATCH:
 | Trigger | Action |
 |---------|--------|
-| **/init command or "init" keyword** | → `mcp__multi-llm__multi_init` (MUST USE - GPT+Gemini parallel) |
+| **/init command or "init" keyword** | → 3 LLM 워크플로우 (아래 참조) |
 | Architecture/Algorithm/Design | → `mcp__multi-llm__oracle` |
 | **ANY Frontend/UI code** (Web, Mobile, Styling) | → `mcp__multi-llm__frontend_designer` |
 | Documentation/README/Comments | → `mcp__multi-llm__document_writer` |
 | Image/Screenshot analysis | → `mcp__multi-llm__multimodal_look` |
 | **ANY code implementation** | → `mcp__multi-llm__review_implementation` (AFTER) |
+
+### 1.5. /init 3 LLM 워크플로우:
+```
+/init 요청 시:
+1. [Claude] 프로젝트 탐색 (Glob, Read로 파일 구조, 주요 파일 확인)
+2. [Claude] 탐색 결과를 project_info로 정리
+3. [Claude] mcp__multi-llm__multi_init 호출 (project_path, project_info 전달)
+4. [GPT + Gemini] 병렬로 추가 분석 실행
+5. [Claude] 3개 LLM 결과를 받아서 사용자에게 종합 보고
+```
+**중요**: Claude가 먼저 탐색하고, 그 결과를 GPT/Gemini에게 전달!
 
 ### 2. NEVER TRUST YOURSELF - ALWAYS VERIFY:
 After implementing ANY code:
@@ -57,7 +68,7 @@ review_implementation ← MANDATORY
 
 ## TRIGGER KEYWORDS:
 
-- **"/init", "init", "프로젝트 초기화"** → MUST call `mcp__multi-llm__multi_init` (NOT explore yourself - use the tool!)
+- **"/init", "init", "프로젝트 초기화"** → 3 LLM 워크플로우: Claude 탐색 → multi_init(GPT+Gemini) → 종합
 - "설계", "아키텍처", "구조", "알고리즘" → `oracle`
 - **Frontend/UI (ANY)** → `frontend_designer`:
   - Web: React, Vue, Svelte, Angular, Next.js, Nuxt.js
@@ -72,7 +83,8 @@ review_implementation ← MANDATORY
 
 ## NEVER DO:
 
-- On /init: explore files yourself → MUST call `multi_init` tool instead
+- On /init: Skip Claude exploration → MUST explore first, then call multi_init
+- On /init: Skip multi_init → MUST call it after exploration for GPT+Gemini analysis
 - Ask "should I use Oracle?" → just USE it
 - Say "I'll use X tool" → just CALL it
 - Mark complete without verification
