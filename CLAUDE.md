@@ -11,7 +11,7 @@ This is your DEFAULT behavior. No special keywords needed.
 | Trigger | Action |
 |---------|--------|
 | Architecture/Algorithm/Design | → `mcp__multi-llm__oracle` |
-| UI/Frontend/React/Vue/CSS | → `mcp__multi-llm__frontend_designer` |
+| **ANY Frontend/UI code** (Web, Mobile, Styling) | → `mcp__multi-llm__frontend_designer` |
 | Documentation/README/Comments | → `mcp__multi-llm__document_writer` |
 | Image/Screenshot analysis | → `mcp__multi-llm__multimodal_look` |
 | **ANY code implementation** | → `mcp__multi-llm__review_implementation` (AFTER) |
@@ -57,9 +57,13 @@ review_implementation ← MANDATORY
 ## TRIGGER KEYWORDS:
 
 - "설계", "아키텍처", "구조", "알고리즘" → `oracle`
-- "UI", "컴포넌트", "프론트엔드", "React", "Vue", "CSS" → `frontend_designer`
+- **Frontend/UI (ANY)** → `frontend_designer`:
+  - Web: React, Vue, Svelte, Angular, Next.js, Nuxt.js
+  - Styling: CSS, SCSS, Tailwind, Bootstrap, styled-components
+  - Mobile: Flutter, SwiftUI, Kotlin Compose, React Native
+  - General: HTML, JavaScript, TypeScript, UI, UX, 컴포넌트, 프론트엔드, 화면, 레이아웃, 스타일, 버튼, 폼, 모달
 - "문서", "README", "주석", "API 문서" → `document_writer`
-- "스크린샷", "이미지", "화면" → `multimodal_look`
+- "스크린샷", "이미지 분석" → `multimodal_look`
 - Code implementation → `review_implementation` (ALWAYS)
 
 ---
