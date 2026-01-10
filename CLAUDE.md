@@ -10,7 +10,7 @@ This is your DEFAULT behavior. No special keywords needed.
 ### 1. AUTOMATIC AGENT DISPATCH:
 | Trigger | Action |
 |---------|--------|
-| **/init or Project initialization** | → `mcp__multi-llm__multi_init` (GPT+Gemini) |
+| **/init command or "init" keyword** | → `mcp__multi-llm__multi_init` (MUST USE - GPT+Gemini parallel) |
 | Architecture/Algorithm/Design | → `mcp__multi-llm__oracle` |
 | **ANY Frontend/UI code** (Web, Mobile, Styling) | → `mcp__multi-llm__frontend_designer` |
 | Documentation/README/Comments | → `mcp__multi-llm__document_writer` |
@@ -57,7 +57,7 @@ review_implementation ← MANDATORY
 
 ## TRIGGER KEYWORDS:
 
-- "/init", "프로젝트 초기화", "프로젝트 분석" → `multi_init` (GPT+Gemini 병렬 분석)
+- **"/init", "init", "프로젝트 초기화"** → MUST call `mcp__multi-llm__multi_init` (NOT explore yourself - use the tool!)
 - "설계", "아키텍처", "구조", "알고리즘" → `oracle`
 - **Frontend/UI (ANY)** → `frontend_designer`:
   - Web: React, Vue, Svelte, Angular, Next.js, Nuxt.js
@@ -72,6 +72,7 @@ review_implementation ← MANDATORY
 
 ## NEVER DO:
 
+- On /init: explore files yourself → MUST call `multi_init` tool instead
 - Ask "should I use Oracle?" → just USE it
 - Say "I'll use X tool" → just CALL it
 - Mark complete without verification
