@@ -22,10 +22,11 @@ curl -fsSL https://raw.githubusercontent.com/jongseo-yoon/multi-llm-mcp/main/ins
 ### 에이전트 (Sub Agents)
 | 도구 | 설명 |
 |------|------|
-| `oracle` | 🔮 고급 추론 에이전트 (GPT-5.2) - 아키텍처 설계, 알고리즘 최적화 |
-| `frontend_designer` | 🎨 UI/UX 코드 작성 (Gemini 3) - React, Vue, Tailwind 등 |
-| `document_writer` | 📝 문서 작성 (Gemini 3) - README, API 문서, 주석 |
-| `multimodal_look` | 👁️ 이미지 분석 (Gemini 3) - 스크린샷에서 코드 생성, 버그 발견 |
+| `oracle` | 고급 추론 에이전트 (GPT-5.2) - 아키텍처 설계, 알고리즘 최적화 |
+| `review_implementation` | 구현 검토 에이전트 (GPT-5.2) - 요구사항 충족 여부 검증 |
+| `frontend_designer` | UI/UX 코드 작성 (Gemini 3) - React, Vue, Tailwind 등 |
+| `document_writer` | 문서 작성 (Gemini 3) - README, API 문서, 주석 |
+| `multimodal_look` | 이미지 분석 (Gemini 3) - 스크린샷에서 코드 생성, 버그 발견 |
 
 ### 기본 도구
 | 도구 | 설명 |
@@ -42,8 +43,9 @@ curl -fsSL https://raw.githubusercontent.com/jongseo-yoon/multi-llm-mcp/main/ins
 | `set_project_root` | 프로젝트 루트 설정 (히스토리 저장 위치) |
 | `get_history` | 최근 작업 히스토리 조회 |
 | `compact_history` | 오래된 히스토리 파일 압축 |
+| `save_workflow` | 전체 작업 워크플로우 저장 |
 
-> **History 기능**: 에이전트 호출 결과가 `history/HISTORY_#.md`에 자동 저장됩니다.
+> **History 기능**: 워크플로우가 `history/HISTORY_#.md`에 저장됩니다.
 > 10개 이상 쌓이면 자동으로 압축됩니다.
 
 ## 빠른 시작
@@ -92,6 +94,58 @@ gemini
 ### 4. Claude Code 재시작
 
 끝! 이제 Claude Code에서 GPT와 Gemini를 사용할 수 있습니다.
+
+## 자동 사용 설정 (CLAUDE.md)
+
+MCP 서버만 설정하면 도구는 사용 가능하지만, Claude가 **자동으로** 사용하지는 않습니다.
+자동 사용을 원하면 `CLAUDE.md` 파일을 프로젝트 루트 또는 홈 디렉토리에 추가하세요.
+
+### CLAUDE.md 설정
+
+**프로젝트별 설정**: 프로젝트 루트에 `CLAUDE.md` 생성
+**전역 설정**: `~/CLAUDE.md` 생성
+
+```markdown
+## Multi-LLM Sub Agents
+
+다음 MCP 도구들을 상황에 맞게 **자동으로** 사용하세요:
+
+### Oracle (GPT-5.2) - `mcp__multi-llm__oracle`
+**사용 시점**: 복잡한 추론, 아키텍처 설계, 알고리즘 설계, 기술 의사결정이 필요할 때
+
+### Review Implementation (GPT-5.2) - `mcp__multi-llm__review_implementation`
+**사용 시점**: 구현 완료 후 사용자 요구사항 충족 여부 검증이 필요할 때
+
+### Frontend Designer (Gemini 3) - `mcp__multi-llm__frontend_designer`
+**사용 시점**: UI/UX 코드 작성이 필요할 때
+
+### Document Writer (Gemini 3) - `mcp__multi-llm__document_writer`
+**사용 시점**: 문서 작성이 필요할 때
+
+### Multimodal Looker (Gemini 3) - `mcp__multi-llm__multimodal_look`
+**사용 시점**: 이미지/스크린샷 분석이 필요할 때
+
+### 사용 규칙
+1. 위 상황에 해당하면 **자동으로** 해당 도구를 사용
+2. 일반적인 코드 탐색, 검색, 편집은 Claude가 직접 수행
+3. 도구 사용 전 사용자에게 물어볼 필요 없음
+
+### 자동 워크플로우
+**코드 구현 완료 시 반드시 review_implementation 실행:**
+1. 사용자 요청에 따라 코드 구현 완료
+2. **자동으로** `review_implementation` 호출하여 요구사항 충족 여부 검증
+3. 피드백 결과에 따라:
+   - COMPLETE: 사용자에게 완료 보고
+   - INCOMPLETE/NEEDS REVISION: 누락된 부분 자동으로 수정 후 다시 검증
+```
+
+### 빠른 설정 (전역)
+
+```bash
+cp CLAUDE.md ~/CLAUDE.md
+```
+
+이제 모든 프로젝트에서 Claude가 자동으로 GPT/Gemini 에이전트를 활용합니다.
 
 ## 사용 예시
 
